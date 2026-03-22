@@ -57,12 +57,28 @@ export default function Dashboard() {
                 <div className="font-body text-sm text-synth-dim mb-2">ID: {room.roomId}</div>
                 <div className="font-body text-sm text-synth-dim mb-4">TYPE: {room.streamType.toUpperCase()}</div>
                 <div className="font-body text-sm text-synth-dim mb-6">VIEWERS: {room.viewerCount || 0}</div>
-                <div className="mt-auto">
-                  <Link href={`/room/${room.roomId}`}>
+                <div className="mt-auto flex gap-2">
+                  <Link href={`/room/${room.roomId}`} className="flex-1">
                     <RetroButton variant="ghost" fullWidth className="border border-synth-cyan">
                       {room.isActive ? 'MONITOR' : 'LAUNCH'}
                     </RetroButton>
                   </Link>
+                  <button 
+                    onClick={async () => {
+                      if(confirm('Are you sure you want to delete this room history?')) {
+                        try {
+                          await api.delete(`/rooms/${room.roomId}`);
+                          setRooms(prev => prev.filter(r => r.roomId !== room.roomId));
+                        } catch (err) {
+                          alert('Failed to delete room');
+                        }
+                      }
+                    }}
+                    className="px-3 border border-synth-red text-synth-red hover:bg-synth-red hover:text-white transition-colors uppercase font-bold text-xs rounded"
+                    title="Delete Room History"
+                  >
+                    DEL
+                  </button>
                 </div>
               </RetroCard>
             ))}
