@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react';
 const TOTAL_FRAMES = 192;
 
 function frameSrc(i: number) {
-  return `/frames/frame_${String(i).padStart(3, '0')}_delay-0.041s.webp`;
+  return `/sequence/frame_${String(i).padStart(3, '0')}_delay-0.041s.webp`;
 }
 
 export default function AnimatedBackground() {
@@ -107,7 +107,7 @@ export default function AnimatedBackground() {
         minHeight: '100dvh',
         pointerEvents: 'none',
         zIndex: 0,
-        opacity: 0.6,
+        opacity: 0.85,
         mixBlendMode: 'screen',
         display: 'block',
       }}

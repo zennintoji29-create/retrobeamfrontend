@@ -11,7 +11,7 @@ export default function Home() {
         {Array.from({ length: 25 }).map((_, i) => (
           <div
             key={i}
-            className="absolute rounded-full bg-red-400/30 blur-sm animate-float-up"
+            className="absolute rounded-full bg-pink-400/50 blur-sm animate-float-up"
             style={{
               left: `${(i * 13) % 100}%`,
               width: `${(i % 3) + 2}px`,
@@ -35,7 +35,7 @@ export default function Home() {
           <h1
             data-text="RETROBEAM"
             className="text-5xl sm:text-7xl md:text-[8rem] lg:text-[10rem] font-heading text-white mb-4 tracking-[0.15em] leading-none glitch-text"
-            style={{ textShadow: '0 0 30px rgba(229,9,20,0.7), 0 0 60px rgba(229,9,20,0.3)' }}
+            style={{ textShadow: '0 0 30px rgba(255,0,160,0.7), 0 0 60px rgba(255,0,160,0.4), 0 0 90px rgba(255,0,160,0.2)' }}
           >
             RETROBEAM
           </h1>
@@ -52,21 +52,21 @@ export default function Home() {
           className="w-full max-w-2xl mx-auto relative px-4 sm:px-0"
         >
           {/* Portal glow behind */}
-          <div className="absolute inset-0 bg-synth-red/10 blur-3xl rounded-full scale-110 animate-pulse pointer-events-none" />
+          <div className="absolute inset-0 bg-synth-magenta/20 blur-3xl rounded-full scale-110 animate-pulse pointer-events-none" />
 
           {/* Card */}
-          <div className="relative glass-panel p-6 sm:p-10 border border-synth-red/30 shadow-[0_0_60px_rgba(229,9,20,0.15)]">
+          <div className="relative glass-panel p-6 sm:p-10 border border-synth-magenta/40 shadow-[0_0_60px_rgba(255,0,160,0.25)]">
             {/* Separator line */}
             <div className="flex items-center gap-4 mb-6 sm:mb-8">
-              <div className="flex-1 h-px bg-gradient-to-r from-transparent to-synth-red/60" />
-              <span className="text-synth-red/80 font-heading tracking-[0.2em] sm:tracking-[0.3em] text-xs sm:text-sm uppercase">Initiate Session</span>
-              <div className="flex-1 h-px bg-gradient-to-l from-transparent to-synth-red/60" />
+              <div className="flex-1 h-px bg-gradient-to-r from-transparent to-synth-magenta/60" />
+              <span className="text-synth-magenta/90 font-heading tracking-[0.2em] sm:tracking-[0.3em] text-xs sm:text-sm uppercase">Initiate Session</span>
+              <div className="flex-1 h-px bg-gradient-to-l from-transparent to-synth-magenta/60" />
             </div>
 
             <div className="flex flex-col sm:flex-row gap-4 sm:gap-5">
               {/* Primary CTA */}
               <Link href="/auth/login" className="flex-1 group">
-                <div className="relative w-full px-6 sm:px-8 py-4 sm:py-5 font-heading text-lg sm:text-xl tracking-[0.15em] uppercase text-center rounded-lg border border-synth-red bg-synth-red/10 text-synth-red transition-all duration-300 hover:bg-synth-red hover:text-white hover:shadow-[0_0_30px_rgba(229,9,20,0.6)] overflow-hidden portal-hover">
+                <div className="relative w-full px-6 sm:px-8 py-4 sm:py-5 font-heading text-lg sm:text-xl tracking-[0.15em] uppercase text-center rounded-lg border border-synth-magenta bg-synth-magenta/15 text-synth-magenta transition-all duration-300 hover:bg-synth-magenta hover:text-white hover:shadow-[0_0_30px_rgba(255,0,160,0.6)] overflow-hidden portal-hover">
                   <span className="relative z-10">Broadcast</span>
                   <div className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity bg-[repeating-linear-gradient(0deg,rgba(255,255,255,0.1)_0px,rgba(255,255,255,0.1)_1px,transparent_1px,transparent_4px)]" />
                 </div>
