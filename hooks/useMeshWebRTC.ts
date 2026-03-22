@@ -52,13 +52,15 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
   const [viewerCount, setViewerCount] = useState(1);
 
   const localStreamRef = useRef<MediaStream | null>(null);
+  const participantsRef = useRef<Participant[]>([]);
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingCandidates = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const userMediaStreamRef = useRef<MediaStream | null>(null);
   const displayMediaStreamRef = useRef<MediaStream | null>(null);
 
-  // Keep localStreamRef in sync
+  // Sync refs safely
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
+  useEffect(() => { participantsRef.current = participants; }, [participants]);
 
   // Cleanly close everything
   const leaveRoom = useCallback(() => {
@@ -109,7 +111,6 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       pc.ontrack = (event) => {
         setRemotePeers(prev => {
           const peerIdMatch = prev.find(p => p.peerId === peerId);
-          // event.streams[0] is the stream this track belongs to
           const incomingStream = event.streams[0] || new MediaStream([event.track]);
           
           if (peerIdMatch) {
@@ -125,8 +126,8 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
             return [...prev];
           }
           
-          // Find username from participants if available
-          const participant = participants.find(p => p.peerId === peerId);
+          // Use Ref to avoid staleness without re-triggering effect
+          const participant = participantsRef.current.find(p => p.peerId === peerId);
           return [...prev, { 
             peerId, 
             username: participant?.name || 'Remote Peer',
@@ -279,7 +280,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       socket.off('host:muted');
       leaveRoom();
     };
-  }, [socket, roomId, leaveRoom, participants]);
+  }, [socket, roomId, leaveRoom]);
 
   // Announce presence with guestName
   useEffect(() => {

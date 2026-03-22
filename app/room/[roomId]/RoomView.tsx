@@ -27,6 +27,142 @@ function getEmbedUrl(url: string): string {
   return url;
 }
 
+// --- Sidebar/Panel content (shared between desktop sidebar and mobile drawer/tab) ---
+const SidePanel = ({ 
+  room, participants, isHost, remotePeers, isConnected, 
+  videoUrlInput, setVideoUrlInput, syncedVideo, handleSyncVideo, 
+  handleStopVideo, sendReaction, handleMute, handleKick, handleBan,
+  raisedHands, socket
+}: any) => (
+  <div className="flex flex-col gap-4 p-4 h-full overflow-y-auto custom-scrollbar relative z-10">
+    {/* Room Info */}
+    <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
+      <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D]">
+        <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Data Feed</h3>
+      </div>
+      <div className="p-3 flex flex-col gap-2">
+        <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-2">
+          <span className="text-[#4C5C2D] font-heading text-sm font-bold tracking-widest uppercase">Room ID</span>
+          <span className="text-[#FFDE42] font-mono font-bold text-sm select-all">{room.roomId}</span>
+        </div>
+        <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-2">
+          <span className="text-[#4C5C2D] font-heading text-sm font-bold tracking-widest uppercase">Nodes</span>
+          <span className="text-[#1B0C0C] bg-[#FFDE42] font-black text-lg font-heading px-2 py-0.5">{remotePeers.length + 1}</span>
+        </div>
+        <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-2">
+          <span className="text-[#4C5C2D] font-heading text-sm font-bold tracking-widest uppercase">Signal</span>
+          <div className="flex items-center gap-2">
+            <div className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-500'}`} />
+            <span className="text-[#FFDE42] font-heading text-sm font-bold">{isConnected ? 'LIVE' : 'LOST'}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {/* Participants List */}
+    <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
+      <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D] flex justify-between items-center">
+        <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Network Nodes</h3>
+        <span className="text-[10px] bg-[#FFDE42] text-[#1B0C0C] px-1.5 py-0.5 font-bold">{participants.length}</span>
+      </div>
+      <div className="p-2 flex flex-col gap-2 max-h-[300px] overflow-y-auto custom-scrollbar">
+        {participants.map((p: any) => (
+          <div key={p.peerId} className="flex flex-col border border-[#313E17] p-2 bg-[#1B0C0C]/50 hover:bg-[#313E17]/20 transition-colors">
+            <div className="flex justify-between items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className={`w-2 h-2 shrink-0 ${p.isHost ? 'bg-cyan-400' : 'bg-[#FFDE42]'}`} />
+                <span className={`font-mono text-sm truncate ${p.isHost ? 'text-cyan-400' : 'text-[#FFDE42]'}`}>
+                  {p.name} {p.peerId === socket?.id && '(YOU)'}
+                </span>
+              </div>
+              {p.isHost && <span className="text-[8px] border border-cyan-400 text-cyan-400 px-1 font-bold shrink-0">HOST</span>}
+              {raisedHands.has(p.peerId) && <span className="text-xs" title="Hand Raised">✋</span>}
+            </div>
+            
+            {/* Host Admin Controls in List */}
+            {isHost && p.peerId !== socket?.id && (
+              <div className="flex gap-1 mt-2">
+                <button 
+                  onClick={() => handleMute(p.peerId)}
+                  className="flex-1 bg-[#1B0C0C] hover:bg-red-900/30 text-red-400 border border-[#4C5C2D] text-[9px] py-1 font-bold uppercase transition-colors"
+                >
+                  MUTE
+                </button>
+                <button 
+                  onClick={() => handleKick(p.peerId)}
+                  className="flex-1 bg-[#1B0C0C] hover:bg-red-600 text-white border border-red-600 text-[9px] py-1 font-bold uppercase transition-colors"
+                >
+                  KICK
+                </button>
+                <button 
+                  onClick={() => handleBan(p.peerId)}
+                  className="flex-1 border border-gray-600 text-gray-500 hover:bg-black text-[8px] py-1 font-bold uppercase transition-colors"
+                  title="BAN FROM SESSION"
+                >
+                  BAN
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+        {participants.length === 0 && <div className="text-[10px] text-[#4C5C2D] font-mono p-2">NO NODES DETECTED...</div>}
+      </div>
+    </div>
+
+    {/* Reactions */}
+    <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
+      <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D]">
+        <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Signals</h3>
+      </div>
+      <div className="p-3 grid grid-cols-3 gap-2">
+        {['👍', '🔥', '😂', '💀', '💖', '👾'].map(emoji => (
+          <button
+            key={emoji}
+            onClick={() => sendReaction(emoji)}
+            className="text-2xl bg-[#1B0C0C] hover:bg-[#FFDE42] border-[2px] border-[#313E17] hover:border-[#1B0C0C] shadow-[3px_3px_0_#4C5C2D] py-3 transition-all active:translate-x-[2px] active:translate-y-[2px] active:shadow-none flex items-center justify-center cursor-crosshair"
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+    </div>
+
+    {/* Host-only: Video Override */}
+    {isHost && (
+      <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
+        <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D]">
+          <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Override</h3>
+        </div>
+        <div className="p-3 flex flex-col gap-3">
+          <input
+            type="text"
+            value={videoUrlInput}
+            onChange={e => setVideoUrlInput(e.target.value)}
+            placeholder="YOUTUBE URL..."
+            className="w-full bg-[#1B0C0C] text-[#FFDE42] border-[2px] border-[#4C5C2D] p-3 font-mono text-sm font-bold placeholder:text-[#4C5C2D]/50 focus:outline-none focus:border-[#FFDE42] shadow-[3px_3px_0_#313E17] transition-colors"
+          />
+          {!syncedVideo ? (
+            <button
+              onClick={handleSyncVideo}
+              disabled={!isConnected || !videoUrlInput}
+              className="w-full bg-[#313E17] hover:bg-[#FFDE42] text-[#FFDE42] hover:text-[#1B0C0C] border-[2px] border-[#1B0C0C] disabled:opacity-40 py-3 text-base font-heading font-black tracking-widest uppercase transition-colors shadow-[4px_4px_0_#4C5C2D] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+            >
+              Execute Transmission
+            </button>
+          ) : (
+            <button
+              onClick={handleStopVideo}
+              className="w-full bg-red-600 hover:bg-red-500 text-white border-[2px] border-[#1B0C0C] py-3 text-base font-heading font-black tracking-widest uppercase transition-colors shadow-[4px_4px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+            >
+              Halt Transmission
+            </button>
+          )}
+        </div>
+      </div>
+    )}
+  </div>
+);
+
 export default function RoomView({ room, isHost, joinToken, guestName }: { room: any, isHost: boolean, joinToken?: string, guestName?: string }) {
   const router = useRouter();
   const { user, logout } = useAuth();
@@ -159,136 +295,6 @@ export default function RoomView({ room, isHost, joinToken, guestName }: { room:
     : allTiles.length <= 2
     ? 'grid-cols-1 sm:grid-cols-2'
     : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
-
-  // --- Sidebar/Panel content (shared between desktop sidebar and mobile drawer/tab) ---
-  const SidePanel = () => (
-    <div className="flex flex-col gap-4 p-4 h-full overflow-y-auto">
-      {/* Room Info */}
-      <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
-        <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D]">
-          <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Data Feed</h3>
-        </div>
-        <div className="p-3 flex flex-col gap-2">
-          <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-2">
-            <span className="text-[#4C5C2D] font-heading text-sm font-bold tracking-widest uppercase">Room ID</span>
-            <span className="text-[#FFDE42] font-mono font-bold text-sm select-all">{room.roomId}</span>
-          </div>
-          <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-2">
-            <span className="text-[#4C5C2D] font-heading text-sm font-bold tracking-widest uppercase">Units</span>
-            <span className="text-[#1B0C0C] bg-[#FFDE42] font-black text-lg font-heading px-2 py-0.5">{remotePeers.length + 1}</span>
-          </div>
-          <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-2">
-            <span className="text-[#4C5C2D] font-heading text-sm font-bold tracking-widest uppercase">Signal</span>
-            <div className="flex items-center gap-2">
-              <div className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-500'}`} />
-              <span className="text-[#FFDE42] font-heading text-sm font-bold">{isConnected ? 'LIVE' : 'LOST'}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Participants List */}
-      <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
-        <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D] flex justify-between items-center">
-          <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Network Nodes</h3>
-          <span className="text-[10px] bg-[#FFDE42] text-[#1B0C0C] px-1.5 py-0.5 font-bold">{participants.length}</span>
-        </div>
-        <div className="p-2 flex flex-col gap-2 max-h-[300px] overflow-y-auto custom-scrollbar">
-          {participants.map(p => (
-            <div key={p.peerId} className="flex flex-col border border-[#313E17] p-2 bg-[#1B0C0C]/50 hover:bg-[#313E17]/20 transition-colors">
-              <div className="flex justify-between items-center gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className={`w-2 h-2 shrink-0 ${p.isHost ? 'bg-synth-cyan' : 'bg-[#FFDE42]'}`} />
-                  <span className={`font-mono text-sm truncate ${p.isHost ? 'text-synth-cyan' : 'text-[#FFDE42]'}`}>
-                    {p.name} {p.peerId === socket?.id && '(YOU)'}
-                  </span>
-                </div>
-                {p.isHost && <span className="text-[8px] border border-synth-cyan text-synth-cyan px-1 font-bold shrink-0">HOST</span>}
-                {raisedHands.has(p.peerId) && <span className="text-xs" title="Hand Raised">✋</span>}
-              </div>
-              
-              {/* Host Admin Controls in List */}
-              {isHost && p.peerId !== socket?.id && (
-                <div className="flex gap-1 mt-2">
-                  <button 
-                    onClick={() => handleMute(p.peerId)}
-                    className="flex-1 bg-[#1B0C0C] hover:bg-red-900/30 text-red-400 border border-[#4C5C2D] text-[9px] py-1 font-bold uppercase transition-colors"
-                  >
-                    MUTE
-                  </button>
-                  <button 
-                    onClick={() => handleKick(p.peerId)}
-                    className="flex-1 bg-[#1B0C0C] hover:bg-red-600 text-white border border-red-600 text-[9px] py-1 font-bold uppercase transition-colors"
-                  >
-                    KICK
-                  </button>
-                  <button 
-                    onClick={() => handleBan(p.peerId)}
-                    className="flex-1 border border-synth-dim text-synth-dim hover:bg-synth-void text-[8px] py-1 font-bold uppercase transition-colors"
-                    title="BAN FROM SESSION"
-                  >
-                    BAN
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Reactions */}
-      <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
-        <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D]">
-          <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Signals</h3>
-        </div>
-        <div className="p-3 grid grid-cols-3 gap-2">
-          {['👍', '🔥', '😂', '💀', '💖', '👾'].map(emoji => (
-            <button
-              key={emoji}
-              onClick={() => sendReaction(emoji)}
-              className="text-2xl bg-[#1B0C0C] hover:bg-[#FFDE42] border-[2px] border-[#313E17] hover:border-[#1B0C0C] shadow-[3px_3px_0_#4C5C2D] py-3 transition-all active:translate-x-[2px] active:translate-y-[2px] active:shadow-none flex items-center justify-center cursor-crosshair"
-            >
-              {emoji}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Host-only: Video Override */}
-      {isHost && (
-        <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
-          <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D]">
-            <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Override</h3>
-          </div>
-          <div className="p-3 flex flex-col gap-3">
-            <input
-              type="text"
-              value={videoUrlInput}
-              onChange={e => setVideoUrlInput(e.target.value)}
-              placeholder="YOUTUBE URL..."
-              className="w-full bg-[#1B0C0C] text-[#FFDE42] border-[2px] border-[#4C5C2D] p-3 font-mono text-sm font-bold placeholder:text-[#4C5C2D]/50 focus:outline-none focus:border-[#FFDE42] shadow-[3px_3px_0_#313E17] transition-colors"
-            />
-            {!syncedVideo ? (
-              <button
-                onClick={handleSyncVideo}
-                disabled={!isConnected || !videoUrlInput}
-                className="w-full bg-[#313E17] hover:bg-[#FFDE42] text-[#FFDE42] hover:text-[#1B0C0C] border-[2px] border-[#1B0C0C] disabled:opacity-40 py-3 text-base font-heading font-black tracking-widest uppercase transition-colors shadow-[4px_4px_0_#4C5C2D] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
-              >
-                Execute Transmission
-              </button>
-            ) : (
-              <button
-                onClick={handleStopVideo}
-                className="w-full bg-red-600 hover:bg-red-500 text-white border-[2px] border-[#1B0C0C] py-3 text-base font-heading font-black tracking-widest uppercase transition-colors shadow-[4px_4px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
-              >
-                Halt Transmission
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
 
   return (
     <div className="flex flex-col bg-[#1B0C0C] text-[#FFDE42] overflow-hidden" style={{ height: '100dvh' }}>
@@ -522,7 +528,13 @@ export default function RoomView({ room, isHost, joinToken, guestName }: { room:
 
         {/* ======== DESKTOP SIDEBAR ======== */}
         <aside className="hidden lg:flex w-[340px] xl:w-[380px] shrink-0 flex-col border-l-[4px] border-[#4C5C2D] bg-[#1B0C0C] overflow-hidden">
-          <SidePanel />
+          <SidePanel 
+            room={room} participants={participants} isHost={isHost} remotePeers={remotePeers} isConnected={isConnected}
+            videoUrlInput={videoUrlInput} setVideoUrlInput={setVideoUrlInput} syncedVideo={syncedVideo} 
+            handleSyncVideo={handleSyncVideo} handleStopVideo={handleStopVideo} sendReaction={sendReaction}
+            handleMute={handleMute} handleKick={handleKick} handleBan={handleBan}
+            raisedHands={raisedHands} socket={socket}
+          />
         </aside>
 
         {/* ======== MOBILE/TABLET SLIDE-UP PANEL ======== */}
@@ -539,7 +551,13 @@ export default function RoomView({ room, isHost, joinToken, guestName }: { room:
                 <button onClick={() => setShowMobilePanel(false)} className="text-[#FFDE42] text-2xl font-heading font-black w-8 h-8 flex items-center justify-center border-[2px] border-[#4C5C2D] hover:bg-[#4C5C2D]">✕</button>
               </div>
               <div className="overflow-y-auto flex-1">
-                <SidePanel />
+                <SidePanel 
+                  room={room} participants={participants} isHost={isHost} remotePeers={remotePeers} isConnected={isConnected}
+                  videoUrlInput={videoUrlInput} setVideoUrlInput={setVideoUrlInput} syncedVideo={syncedVideo} 
+                  handleSyncVideo={handleSyncVideo} handleStopVideo={handleStopVideo} sendReaction={sendReaction}
+                  handleMute={handleMute} handleKick={handleKick} handleBan={handleBan}
+                  raisedHands={raisedHands} socket={socket}
+                />
               </div>
             </div>
           </div>
