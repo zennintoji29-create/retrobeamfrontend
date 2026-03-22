@@ -1,101 +1,93 @@
-import Image from "next/image";
+'use client';
+
+import Link from 'next/link';
+import { motion } from 'framer-motion';
 
 export default function Home() {
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+    <div className="flex-1 flex flex-col items-center justify-center p-6 relative overflow-hidden min-h-screen">
+      {/* Outer floating spores (lightweight pure css) */}
+      <div className="absolute inset-0 pointer-events-none z-0 overflow-hidden">
+        {Array.from({ length: 25 }).map((_, i) => (
+          <div
+            key={i}
+            className="absolute rounded-full bg-red-400/30 blur-sm animate-float-up"
+            style={{
+              left: `${(i * 13) % 100}%`,
+              width: `${(i % 3) + 2}px`,
+              height: `${(i % 3) + 2}px`,
+              animationDuration: `${12 + (i % 8)}s`,
+              animationDelay: `-${(i * 2.5) % 20}s`,
+              bottom: '-10px',
+            }}
+          />
+        ))}
+      </div>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+      <div className="z-10 w-full max-w-5xl flex flex-col items-center">
+        {/* TITLE */}
+        <motion.div
+          initial={{ y: 30, opacity: 0, filter: 'blur(10px)' }}
+          animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }}
+          transition={{ duration: 1.5, ease: 'easeOut' }}
+          className="text-center mb-10 sm:mb-12 flex flex-col items-center"
+        >
+          <h1
+            data-text="RETROBEAM"
+            className="text-5xl sm:text-7xl md:text-[8rem] lg:text-[10rem] font-heading text-white mb-4 tracking-[0.15em] leading-none glitch-text"
+            style={{ textShadow: '0 0 30px rgba(229,9,20,0.7), 0 0 60px rgba(229,9,20,0.3)' }}
           >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+            RETROBEAM
+          </h1>
+          <p className="text-sm md:text-base lg:text-lg font-body text-white/50 max-w-xl mx-auto leading-relaxed tracking-[0.1em] sm:tracking-[0.15em] uppercase px-4">
+            Real-time cinematic broadcast &mdash; share your screen or sync video across the void
+          </p>
+        </motion.div>
+
+        {/* HERO PANEL */}
+        <motion.div
+          initial={{ opacity: 0, y: 30, scale: 0.97 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ delay: 0.7, duration: 1, ease: 'easeOut' }}
+          className="w-full max-w-2xl mx-auto relative px-4 sm:px-0"
         >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          {/* Portal glow behind */}
+          <div className="absolute inset-0 bg-synth-red/10 blur-3xl rounded-full scale-110 animate-pulse pointer-events-none" />
+
+          {/* Card */}
+          <div className="relative glass-panel p-6 sm:p-10 border border-synth-red/30 shadow-[0_0_60px_rgba(229,9,20,0.15)]">
+            {/* Separator line */}
+            <div className="flex items-center gap-4 mb-6 sm:mb-8">
+              <div className="flex-1 h-px bg-gradient-to-r from-transparent to-synth-red/60" />
+              <span className="text-synth-red/80 font-heading tracking-[0.2em] sm:tracking-[0.3em] text-xs sm:text-sm uppercase">Initiate Session</span>
+              <div className="flex-1 h-px bg-gradient-to-l from-transparent to-synth-red/60" />
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-4 sm:gap-5">
+              {/* Primary CTA */}
+              <Link href="/auth/login" className="flex-1 group">
+                <div className="relative w-full px-6 sm:px-8 py-4 sm:py-5 font-heading text-lg sm:text-xl tracking-[0.15em] uppercase text-center rounded-lg border border-synth-red bg-synth-red/10 text-synth-red transition-all duration-300 hover:bg-synth-red hover:text-white hover:shadow-[0_0_30px_rgba(229,9,20,0.6)] overflow-hidden portal-hover">
+                  <span className="relative z-10">Broadcast</span>
+                  <div className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity bg-[repeating-linear-gradient(0deg,rgba(255,255,255,0.1)_0px,rgba(255,255,255,0.1)_1px,transparent_1px,transparent_4px)]" />
+                </div>
+              </Link>
+
+              {/* Secondary CTA */}
+              <Link href="/join" className="flex-1 group">
+                <div className="relative w-full px-6 sm:px-8 py-4 sm:py-5 font-heading text-lg sm:text-xl tracking-[0.15em] uppercase text-center rounded-lg border border-white/20 bg-white/5 text-white/70 transition-all duration-300 hover:bg-white/15 hover:text-white hover:border-white/50 hover:shadow-[0_0_20px_rgba(255,255,255,0.15)] overflow-hidden">
+                  <span className="relative z-10">Join Stream</span>
+                  <div className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity bg-[repeating-linear-gradient(0deg,rgba(255,255,255,0.1)_0px,rgba(255,255,255,0.1)_1px,transparent_1px,transparent_4px)]" />
+                </div>
+              </Link>
+            </div>
+
+            {/* Bottom tagline */}
+            <p className="text-center text-white/30 text-xs font-body tracking-[0.1em] sm:tracking-[0.2em] uppercase mt-6 sm:mt-8">
+              ⬡ &nbsp; Encrypted &nbsp;·&nbsp; Real-Time &nbsp;·&nbsp; Dimensional &nbsp; ⬡
+            </p>
+          </div>
+        </motion.div>
+      </div>
     </div>
   );
 }
