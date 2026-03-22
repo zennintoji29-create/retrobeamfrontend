@@ -12,6 +12,7 @@ import api from '@/lib/api';
 export default function Join() {
   const [roomId, setRoomId] = useState('');
   const [password, setPassword] = useState('');
+  const [guestName, setGuestName] = useState('');
   const [error, setError] = useState('');
   const router = useRouter();
 
@@ -20,8 +21,11 @@ export default function Join() {
     try {
       const res = await api.post(`/rooms/join/${roomId}`, { password });
       
-      // Store the join token for socket auth
+      // Store the join token and guest name for socket auth
       sessionStorage.setItem(`joinToken_${roomId}`, res.data.joinToken);
+      if (guestName) {
+        sessionStorage.setItem(`guestName_${roomId}`, guestName);
+      }
       
       router.push(`/room/${roomId}`);
     } catch (err: any) {
@@ -43,8 +47,16 @@ export default function Join() {
               required
             />
             <RetroInput 
+              label="YOUR NAME" 
+              placeholder="e.g. Commander Smith"
+              value={guestName}
+              onChange={(e) => setGuestName(e.target.value)}
+              required
+            />
+            <RetroInput 
               label="PASSWORD (IF SECURED)" 
               type="password"
+              placeholder="Leave blank if none"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />

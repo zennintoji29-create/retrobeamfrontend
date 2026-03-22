@@ -27,17 +27,17 @@ function getEmbedUrl(url: string): string {
   return url;
 }
 
-export default function RoomView({ room, isHost, joinToken }: { room: any, isHost: boolean, joinToken?: string }) {
+export default function RoomView({ room, isHost, joinToken, guestName }: { room: any, isHost: boolean, joinToken?: string, guestName?: string }) {
   const router = useRouter();
   const { user, logout } = useAuth();
   const { socket, isConnected } = useSocket(joinToken);
 
   const {
-    localStream, localScreenStream, remotePeers,
+    localStream, localScreenStream, remotePeers, participants,
     isMicOn, isCameraOn, isScreenOn,
     toggleMic, toggleCamera, toggleScreenShare,
     viewerCount, leaveRoom
-  } = useMeshWebRTC(room.roomId, socket);
+  } = useMeshWebRTC(room.roomId, socket, guestName);
 
   const [videoUrlInput, setVideoUrlInput] = useState('');
   const [syncedVideo, setSyncedVideo] = useState<{url: string, isPlaying: boolean} | null>(null);
@@ -107,7 +107,13 @@ export default function RoomView({ room, isHost, joinToken }: { room: any, isHos
   };
 
   const handleKick = (peerId: string) => {
-    if (isHost) socket?.emit('host:kick_user', { roomId: room.roomId, targetSocketId: peerId });
+    if (isHost && confirm('KICK THIS USER?')) socket?.emit('host:kick_user', { roomId: room.roomId, targetSocketId: peerId });
+  };
+
+  const handleBan = (peerId: string) => {
+    if (isHost && confirm('BAN THIS USER PERMANENTLY FROM THIS SESSION?')) {
+      socket?.emit('host:ban_user', { roomId: room.roomId, targetSocketId: peerId });
+    }
   };
 
   const handleMute = (peerId: string) => {
@@ -141,7 +147,7 @@ export default function RoomView({ room, isHost, joinToken }: { room: any, isHos
           id,
           peerId: peer.peerId,
           labelIdx: idx,
-          element: <VideoMonitor stream={stream} muted={false} label={`PEER_${peer.peerId.slice(0,4)}${idx > 0 ? ' (SCR)' : ''}`} isLive={true} interactive={false} />,
+          element: <VideoMonitor stream={stream} muted={false} label={peer.username || `PEER_${peer.peerId.slice(0,4)}${idx > 0 ? ' (SCR)' : ''}`} isLive={true} interactive={false} />,
           raised: raisedHands.has(peer.peerId),
         };
       }).filter(Boolean)
@@ -178,6 +184,55 @@ export default function RoomView({ room, isHost, joinToken }: { room: any, isHos
               <span className="text-[#FFDE42] font-heading text-sm font-bold">{isConnected ? 'LIVE' : 'LOST'}</span>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Participants List */}
+      <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
+        <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D] flex justify-between items-center">
+          <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Network Nodes</h3>
+          <span className="text-[10px] bg-[#FFDE42] text-[#1B0C0C] px-1.5 py-0.5 font-bold">{participants.length}</span>
+        </div>
+        <div className="p-2 flex flex-col gap-2 max-h-[300px] overflow-y-auto custom-scrollbar">
+          {participants.map(p => (
+            <div key={p.peerId} className="flex flex-col border border-[#313E17] p-2 bg-[#1B0C0C]/50 hover:bg-[#313E17]/20 transition-colors">
+              <div className="flex justify-between items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className={`w-2 h-2 shrink-0 ${p.isHost ? 'bg-synth-cyan' : 'bg-[#FFDE42]'}`} />
+                  <span className={`font-mono text-sm truncate ${p.isHost ? 'text-synth-cyan' : 'text-[#FFDE42]'}`}>
+                    {p.name} {p.peerId === socket?.id && '(YOU)'}
+                  </span>
+                </div>
+                {p.isHost && <span className="text-[8px] border border-synth-cyan text-synth-cyan px-1 font-bold shrink-0">HOST</span>}
+                {raisedHands.has(p.peerId) && <span className="text-xs" title="Hand Raised">✋</span>}
+              </div>
+              
+              {/* Host Admin Controls in List */}
+              {isHost && p.peerId !== socket?.id && (
+                <div className="flex gap-1 mt-2">
+                  <button 
+                    onClick={() => handleMute(p.peerId)}
+                    className="flex-1 bg-[#1B0C0C] hover:bg-red-900/30 text-red-400 border border-[#4C5C2D] text-[9px] py-1 font-bold uppercase transition-colors"
+                  >
+                    MUTE
+                  </button>
+                  <button 
+                    onClick={() => handleKick(p.peerId)}
+                    className="flex-1 bg-[#1B0C0C] hover:bg-red-600 text-white border border-red-600 text-[9px] py-1 font-bold uppercase transition-colors"
+                  >
+                    KICK
+                  </button>
+                  <button 
+                    onClick={() => handleBan(p.peerId)}
+                    className="flex-1 border border-synth-dim text-synth-dim hover:bg-synth-void text-[8px] py-1 font-bold uppercase transition-colors"
+                    title="BAN FROM SESSION"
+                  >
+                    BAN
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </div>
 
@@ -351,9 +406,33 @@ export default function RoomView({ room, isHost, joinToken }: { room: any, isHos
                   </button>
                   {/* Host controls on peer tiles */}
                   {isHost && tile.labelIdx === 0 && tile.peerId && (
-                    <div className="absolute bottom-8 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                      <button onClick={() => handleMute(tile.peerId)} className="bg-[#1B0C0C] text-red-400 border-[2px] border-[#313E17] px-2 py-1 text-[10px] font-heading font-bold uppercase active:translate-x-[1px] active:translate-y-[1px]">MUTE</button>
-                      <button onClick={() => handleKick(tile.peerId)} className="bg-red-700 text-white border-[2px] border-[#1B0C0C] px-2 py-1 text-[10px] font-heading font-bold uppercase active:translate-x-[1px] active:translate-y-[1px]">KICK</button>
+                    /*                     <div className="absolute bottom-8 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10 scale-90 sm:scale-100 origin-right">
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleMute(tile.peerId); }} 
+                        className="bg-[#1B0C0C] hover:bg-red-900/40 text-red-400 border-[2px] border-[#313E17] px-2 py-1 text-[10px] font-heading font-bold uppercase transition-colors"
+                      >
+                        MUTE
+                      </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleKick(tile.peerId); }} 
+                        className="bg-red-700 hover:bg-red-600 text-white border-[2px] border-[#1B0C0C] px-2 py-1 text-[10px] font-heading font-bold uppercase transition-colors"
+                      >
+                        KICK
+                      </button>
+                    </div>     </div> */
+                    <div className="absolute bottom-8 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10 scale-90 sm:scale-100 origin-right">
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleMute(tile.peerId); }} 
+                        className="bg-[#1B0C0C] hover:bg-red-900/40 text-red-400 border-[2px] border-[#313E17] px-2 py-1 text-[10px] font-heading font-bold uppercase transition-colors"
+                      >
+                        MUTE
+                      </button>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); handleKick(tile.peerId); }} 
+                        className="bg-red-700 hover:bg-red-600 text-white border-[2px] border-[#1B0C0C] px-2 py-1 text-[10px] font-heading font-bold uppercase transition-colors"
+                      >
+                        KICK
+                      </button>
                     </div>
                   )}
                 </div>

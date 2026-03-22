@@ -50,6 +50,7 @@ export default function RoomPage() {
 
   const isBroadcaster = user && room && user.id === room.hostId;
   const joinToken = typeof window !== 'undefined' ? sessionStorage.getItem(`joinToken_${params.roomId}`) : null;
+  const guestName = (typeof window !== 'undefined' ? sessionStorage.getItem(`guestName_${params.roomId}`) : null) || undefined;
   
   if (!isBroadcaster && !joinToken && user?.id !== room.hostId) {
     router.push('/join');
@@ -58,5 +59,5 @@ export default function RoomPage() {
 
   const isHost = isBroadcaster || (user && room && user.id === room.hostId);
 
-  return <RoomView room={room} isHost={!!isHost} joinToken={joinToken || undefined} />;
+  return <RoomView room={room} isHost={!!isHost} joinToken={joinToken || undefined} guestName={guestName} />;
 }

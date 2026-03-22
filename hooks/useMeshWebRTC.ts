@@ -29,13 +29,23 @@ const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
 
 export interface RemotePeer {
   peerId: string;
+  username?: string;
+  isHost?: boolean;
   streams: MediaStream[];
 }
 
-export function useMeshWebRTC(roomId: string, socket: Socket | null) {
+export interface Participant {
+  peerId: string;
+  name: string;
+  isHost: boolean;
+  role: string;
+}
+
+export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?: string) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const [remotePeers, setRemotePeers] = useState<RemotePeer[]>([]);
+  const [participants, setParticipants] = useState<Participant[]>([]);
   const [isMicOn, setIsMicOn] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isScreenOn, setIsScreenOn] = useState(false);
@@ -114,7 +124,15 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
             }
             return [...prev];
           }
-          return [...prev, { peerId, streams: [incomingStream] }];
+          
+          // Find username from participants if available
+          const participant = participants.find(p => p.peerId === peerId);
+          return [...prev, { 
+            peerId, 
+            username: participant?.name || 'Remote Peer',
+            isHost: participant?.isHost,
+            streams: [incomingStream] 
+          }];
         });
       };
 
@@ -148,7 +166,13 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
       setRemotePeers(prev => prev.filter(p => p.peerId !== peerId));
     };
 
-    const handlePeerJoined = async ({ peerId }: { peerId: string }) => {
+    const handlePeerJoined = async ({ peerId, username, isHost }: { peerId: string, username?: string, isHost?: boolean }) => {
+      // Create PC and update peer info immediately to show name even before tracks arrive
+      setRemotePeers(prev => {
+        if (prev.find(p => p.peerId === peerId)) return prev;
+        return [...prev, { peerId, username, isHost, streams: [] }];
+      });
+
       const pc = createPeerConnection(peerId);
       try {
         const offer = await pc.createOffer();
@@ -211,14 +235,28 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
       setViewerCount(count);
     };
 
+    const handleParticipantsUpdate = ({ participants }: { participants: Participant[] }) => {
+      setParticipants(participants);
+      // Update remotePeers usernames if they joined before the participants list sync
+      setRemotePeers(prev => prev.map(peer => {
+        const match = participants.find(p => p.peerId === peer.peerId);
+        if (match) {
+          return { ...peer, username: match.name, isHost: match.isHost };
+        }
+        return peer;
+      }));
+    };
+
     socket.on('peer:joined', handlePeerJoined);
     socket.on('peer:offer', handlePeerOffer);
     socket.on('peer:answer', handlePeerAnswer);
     socket.on('peer:ice-candidate', handleIceCandidate);
     socket.on('peer:left', (data) => handlePeerLeft(data.peerId));
     socket.on('room:viewers_update', handleViewersUpdate);
-    socket.on('host:kicked', leaveRoom);
-    socket.on('room:ended', leaveRoom);
+    socket.on('room:participants_update', handleParticipantsUpdate);
+    socket.on('host:kicked', () => window.location.href = '/');
+    socket.on('host:banned', () => { alert('YOU HAVE BEEN BANNED'); window.location.href = '/'; });
+    socket.on('room:ended', () => { alert('THE MEETING HAS ENDED'); window.location.href = '/'; });
     
     socket.on('host:muted', () => {
       setIsMicOn(false);
@@ -234,12 +272,21 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
       socket.off('peer:ice-candidate', handleIceCandidate);
       socket.off('peer:left');
       socket.off('room:viewers_update');
+      socket.off('room:participants_update');
       socket.off('host:kicked');
+      socket.off('host:banned');
       socket.off('room:ended');
       socket.off('host:muted');
       leaveRoom();
     };
-  }, [socket, roomId, leaveRoom]);
+  }, [socket, roomId, leaveRoom, participants]);
+
+  // Announce presence with guestName
+  useEffect(() => {
+    if (socket && roomId) {
+      socket.emit('peer:join', { roomId, guestName });
+    }
+  }, [socket, roomId, guestName]);
 
   // Renegotiate all peer connections when streams change
   const replaceTracksOnPeers = async () => {
@@ -341,6 +388,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
     localStream,
     localScreenStream,
     remotePeers,
+    participants,
     isMicOn,
     isCameraOn,
     isScreenOn,
