@@ -17,13 +17,30 @@ export default function VideoMonitor({ stream, muted = true, label = 'FEED', isL
   const [isFullscreen, setIsFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Assign stream srcObject every time stream changes
+  // Assign stream srcObject every time stream changes or tracks update
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    
     video.srcObject = stream;
+    
     if (stream) {
-      video.play().catch(() => {});
+      video.play().catch(e => console.warn('Playback blocked:', e));
+
+      const refreshStream = () => {
+        if (video.srcObject === stream) {
+          video.srcObject = stream;
+          video.play().catch(() => {});
+        }
+      };
+
+      stream.addEventListener('addtrack', refreshStream);
+      stream.addEventListener('removetrack', refreshStream);
+
+      return () => {
+        stream.removeEventListener('addtrack', refreshStream);
+        stream.removeEventListener('removetrack', refreshStream);
+      };
     }
   }, [stream]);
 

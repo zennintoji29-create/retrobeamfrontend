@@ -109,21 +109,40 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
 
       // Receive remote stream tracks — each track may come from a different stream (cam vs screen)
       pc.ontrack = (event) => {
+        const cleanupDeadStreams = () => {
+          setRemotePeers(prev => prev.map(p => {
+             if (p.peerId !== peerId) return p;
+             const validStreams = p.streams.filter(s => 
+               s.getTracks().some(t => t.readyState !== 'ended')
+             );
+             return { ...p, streams: validStreams };
+          }));
+        };
+
+        event.track.onended = cleanupDeadStreams;
+
         setRemotePeers(prev => {
           const peerIdMatch = prev.find(p => p.peerId === peerId);
           const incomingStream = event.streams[0] || new MediaStream([event.track]);
           
           if (peerIdMatch) {
-            const existingStream = peerIdMatch.streams.find(s => s.id === incomingStream.id);
+            let updatedStreams = [...peerIdMatch.streams];
+            const existingStream = updatedStreams.find(s => s.id === incomingStream.id);
             if (existingStream) {
               const trackExists = existingStream.getTracks().find(t => t.id === event.track.id);
               if (!trackExists) {
                 existingStream.addTrack(event.track);
               }
             } else {
-              peerIdMatch.streams = [...peerIdMatch.streams, incomingStream];
+              updatedStreams.push(incomingStream);
             }
-            return [...prev];
+            
+            // Clean up old streams synchronously just in case some are already ended
+            updatedStreams = updatedStreams.filter(s => 
+              s.getTracks().some(t => t.readyState !== 'ended')
+            );
+
+            return prev.map(p => p.peerId === peerId ? { ...p, streams: updatedStreams } : p);
           }
           
           // Use Ref to avoid staleness without re-triggering effect
@@ -191,6 +210,13 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       }
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        
+        // Clean up streams that might have ended due to renegotiation
+        setRemotePeers(prev => prev.map(p => {
+          if (p.peerId !== peerId) return p;
+          return { ...p, streams: p.streams.filter(s => s.getTracks().some(t => t.readyState !== 'ended')) };
+        }));
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('peer:answer', { sdp: answer, roomId, targetSocketId: peerId });
@@ -211,6 +237,11 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       if (pc) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+          // Clean up streams that might have ended due to renegotiation
+          setRemotePeers(prev => prev.map(p => {
+            if (p.peerId !== peerId) return p;
+            return { ...p, streams: p.streams.filter(s => s.getTracks().some(t => t.readyState !== 'ended')) };
+          }));
         } catch (e) {
           console.error('Error handling answer', e);
         }
@@ -336,9 +367,19 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
         userMediaStreamRef.current.getAudioTracks().forEach(t => { t.enabled = currentMic; });
         userMediaStreamRef.current.getVideoTracks().forEach(t => { t.enabled = currentVideo; });
       } catch (e) {
-        console.error('Failed to get user media', e);
-        currentMic = false;
-        currentVideo = false;
+        console.warn('Failed to get both media, trying separate fallback', e);
+        try {
+          // Fallback: try requesting only what they explicitly asked for
+          userMediaStreamRef.current = await navigator.mediaDevices.getUserMedia({
+            video: currentVideo ? { facingMode: 'user' } : false,
+            audio: currentMic ? AUDIO_CONSTRAINTS : false,
+          });
+        } catch (fallbackE) {
+          console.error('Fallback failed', fallbackE);
+          alert('Could not access requested camera/microphone.');
+          currentMic = false;
+          currentVideo = false;
+        }
       }
     } else if (userMediaStreamRef.current) {
       userMediaStreamRef.current.getAudioTracks().forEach(t => { t.enabled = currentMic; });
@@ -361,8 +402,13 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
         displayMediaStreamRef.current.getVideoTracks()[0].onended = () => {
           updateLocalTracks({ targetScreen: false });
         };
-      } catch(e) {
+      } catch(e: any) {
         console.error('Failed to get display media', e);
+        if (e.name === 'NotAllowedError') {
+          alert('Screen share permission denied.');
+        } else {
+          alert('Screen sharing is not supported on this device or browser.');
+        }
         currentScreen = false;
       }
     } else if (!currentScreen && displayMediaStreamRef.current) {
