@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
-import { RetroAudioFilter } from '@/utils/audioEffects';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -20,9 +19,9 @@ const ICE_SERVERS = {
 };
 
 const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
-  echoCancellation: true,   // keep — works at capture level before AudioContext
-  noiseSuppression: true,   // keep
-  autoGainControl: false,   // DISABLE — this fights your compressor node, causing pumping
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
   sampleRate: 48000,
   channelCount: 1,
 };
@@ -51,7 +50,6 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
   const [isScreenOn, setIsScreenOn] = useState(false);
   const [viewerCount, setViewerCount] = useState(1);
 
-  const audioFilterRef = useRef<RetroAudioFilter | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const participantsRef = useRef<Participant[]>([]);
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -59,25 +57,18 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
   const userMediaStreamRef = useRef<MediaStream | null>(null);
   const displayMediaStreamRef = useRef<MediaStream | null>(null);
 
-  // FIX 1: Track media state in refs to avoid stale closures inside callbacks
   const isMicOnRef = useRef(false);
   const isCameraOnRef = useRef(false);
   const isScreenOnRef = useRef(false);
 
-  // Sync state refs
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
   useEffect(() => { participantsRef.current = participants; }, [participants]);
 
-  // FIX 2: leaveRoom is stable — no deps that change. Uses refs only.
   const leaveRoom = useCallback(() => {
     peerConnections.current.forEach(pc => pc.close());
     peerConnections.current.clear();
     setRemotePeers([]);
 
-    if (audioFilterRef.current) {
-      audioFilterRef.current.destroy();
-      audioFilterRef.current = null;
-    }
     if (userMediaStreamRef.current) {
       userMediaStreamRef.current.getTracks().forEach(t => t.stop());
       userMediaStreamRef.current = null;
@@ -90,13 +81,11 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
     setLocalStream(null);
     setLocalScreenStream(null);
     localStreamRef.current = null;
-  }, []); // No socket dep — caller emits separately to avoid double emit on cleanup
+  }, []);
 
-  // FIX 3: replaceTracksOnPeers reads socket from arg/ref, not closure
   const replaceTracksOnPeers = useCallback(async (currentSocket: Socket) => {
     const entries = Array.from(peerConnections.current.entries());
     for (const [peerId, pc] of entries) {
-      // Remove all existing senders
       pc.getSenders().forEach(sender => pc.removeTrack(sender));
 
       if (userMediaStreamRef.current) {
@@ -120,14 +109,11 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
     }
   }, [roomId]);
 
-  // Initialize socket event listeners
   useEffect(() => {
     if (!socket) return;
 
-    // FIX 4: Only one peer:join emit, with guestName included from the start
     socket.emit('peer:join', { roomId, guestName });
 
-    // FIX 5: handlePeerLeft defined at effect scope so onconnectionstatechange can reference it
     const handlePeerLeft = (peerId: string) => {
       const pc = peerConnections.current.get(peerId);
       if (pc) {
@@ -196,11 +182,10 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
 
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-          handlePeerLeft(peerId); // FIX 5: now safely in scope
+          handlePeerLeft(peerId);
         }
       };
 
-      // Add existing local tracks
       if (userMediaStreamRef.current) {
         userMediaStreamRef.current.getTracks().forEach(track => {
           pc.addTrack(track, userMediaStreamRef.current!);
@@ -331,14 +316,11 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       socket.off('room:ended');
       socket.off('host:muted', handleHostMuted);
 
-      // FIX 6: Emit leave here (once), not inside leaveRoom, to keep leaveRoom dep-free
       socket.emit('peer:leave', { roomId });
       leaveRoom();
     };
   }, [socket, roomId, guestName, leaveRoom, replaceTracksOnPeers]);
-  // FIX 4: Removed the separate guestName effect — it's now handled in the main effect above
 
-  // FIX 7: updateLocalTracks reads state from refs to avoid stale closures
   const updateLocalTracks = useCallback(async ({
     targetAudio, targetVideo, targetScreen
   }: {
@@ -352,31 +334,17 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
 
     if (needsUserMedia && !userMediaStreamRef.current) {
       try {
-        const rawStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user' },
-          audio: AUDIO_CONSTRAINTS,
+        userMediaStreamRef.current = await navigator.mediaDevices.getUserMedia({
+          video: currentVideo ? { facingMode: 'user' } : false,
+          audio: currentMic ? AUDIO_CONSTRAINTS : false,
         });
-
-        // FIX 8: Apply audio filter to a COPY of the stream, keep original ref intact
-        if (!audioFilterRef.current) {
-          audioFilterRef.current = new RetroAudioFilter();
-        }
-        userMediaStreamRef.current = audioFilterRef.current.applyToStream(rawStream);
         userMediaStreamRef.current.getAudioTracks().forEach(t => { t.enabled = currentMic; });
         userMediaStreamRef.current.getVideoTracks().forEach(t => { t.enabled = currentVideo; });
       } catch (e) {
-        console.warn('Failed to get both media, trying separate fallback', e);
-        try {
-          userMediaStreamRef.current = await navigator.mediaDevices.getUserMedia({
-            video: currentVideo ? { facingMode: 'user' } : false,
-            audio: currentMic ? AUDIO_CONSTRAINTS : false,
-          });
-        } catch (fallbackE) {
-          console.error('Fallback failed', fallbackE);
-          alert('Could not access requested camera/microphone.');
-          currentMic = false;
-          currentVideo = false;
-        }
+        console.error('Failed to get user media', e);
+        alert('Could not access requested camera/microphone.');
+        currentMic = false;
+        currentVideo = false;
       }
     } else if (userMediaStreamRef.current) {
       userMediaStreamRef.current.getAudioTracks().forEach(t => { t.enabled = currentMic; });
@@ -386,12 +354,6 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
     if (!currentMic && !currentVideo && userMediaStreamRef.current) {
       userMediaStreamRef.current.getTracks().forEach(t => t.stop());
       userMediaStreamRef.current = null;
-
-      // Also destroy audio filter when releasing media
-      if (audioFilterRef.current) {
-        audioFilterRef.current.destroy();
-        audioFilterRef.current = null;
-      }
     }
 
     if (currentScreen && !displayMediaStreamRef.current) {
@@ -416,7 +378,6 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       displayMediaStreamRef.current = null;
     }
 
-    // Update refs first, then state
     isMicOnRef.current    = currentMic;
     isCameraOnRef.current = currentVideo;
     isScreenOnRef.current = currentScreen;
