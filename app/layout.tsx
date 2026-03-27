@@ -16,7 +16,7 @@ const bebasNeue = Bebas_Neue({
 });
 
 export const metadata: Metadata = {
-  title: 'RetroBeam | Cinematic',
+  title: 'MEET.EXE ! ! !',
   description: 'Real-Time Cinematic Screen-Sharing & Broadcasting.',
 };
 

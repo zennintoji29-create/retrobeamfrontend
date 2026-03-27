@@ -33,11 +33,11 @@ export default function Home() {
           className="text-center mb-10 sm:mb-12 flex flex-col items-center"
         >
           <h1
-            data-text="RETROBEAM"
+            data-text="MEET.EXE"
             className="text-5xl sm:text-7xl md:text-[8rem] lg:text-[10rem] font-heading text-white mb-4 tracking-[0.15em] leading-none glitch-text"
             style={{ textShadow: '0 0 30px rgba(255,0,160,0.7), 0 0 60px rgba(255,0,160,0.4), 0 0 90px rgba(255,0,160,0.2)' }}
           >
-            RETROBEAM
+            MEET.EXE
           </h1>
           <p className="text-sm md:text-base lg:text-lg font-body text-white/50 max-w-xl mx-auto leading-relaxed tracking-[0.1em] sm:tracking-[0.15em] uppercase px-4">
             Real-time cinematic broadcast &mdash; share your screen or sync video across the void
