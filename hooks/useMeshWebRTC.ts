@@ -20,9 +20,9 @@ const ICE_SERVERS = {
 };
 
 const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
-  echoCancellation: true,
-  noiseSuppression: true,
-  autoGainControl: true,
+  echoCancellation: true,   // keep — works at capture level before AudioContext
+  noiseSuppression: true,   // keep
+  autoGainControl: false,   // DISABLE — this fights your compressor node, causing pumping
   sampleRate: 48000,
   channelCount: 1,
 };
