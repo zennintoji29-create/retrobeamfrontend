@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
+import { RetroAudioFilter } from '@/utils/audioEffects';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -18,13 +19,12 @@ const ICE_SERVERS = {
   ]
 };
 
-// Audio constraints optimized for speech clarity — no cracking/cutting
 const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
   sampleRate: 48000,
-  channelCount: 1, // mono is better for voice, reduces bandwidth and artifacts
+  channelCount: 1,
 };
 
 export interface RemotePeer {
@@ -51,6 +51,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
   const [isScreenOn, setIsScreenOn] = useState(false);
   const [viewerCount, setViewerCount] = useState(1);
 
+  const audioFilterRef = useRef<RetroAudioFilter | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const participantsRef = useRef<Participant[]>([]);
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -58,16 +59,25 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
   const userMediaStreamRef = useRef<MediaStream | null>(null);
   const displayMediaStreamRef = useRef<MediaStream | null>(null);
 
-  // Sync refs safely
+  // FIX 1: Track media state in refs to avoid stale closures inside callbacks
+  const isMicOnRef = useRef(false);
+  const isCameraOnRef = useRef(false);
+  const isScreenOnRef = useRef(false);
+
+  // Sync state refs
   useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
   useEffect(() => { participantsRef.current = participants; }, [participants]);
 
-  // Cleanly close everything
+  // FIX 2: leaveRoom is stable — no deps that change. Uses refs only.
   const leaveRoom = useCallback(() => {
     peerConnections.current.forEach(pc => pc.close());
     peerConnections.current.clear();
     setRemotePeers([]);
 
+    if (audioFilterRef.current) {
+      audioFilterRef.current.destroy();
+      audioFilterRef.current = null;
+    }
     if (userMediaStreamRef.current) {
       userMediaStreamRef.current.getTracks().forEach(t => t.stop());
       userMediaStreamRef.current = null;
@@ -76,22 +86,56 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       displayMediaStreamRef.current.getTracks().forEach(t => t.stop());
       displayMediaStreamRef.current = null;
     }
-    
+
     setLocalStream(null);
     setLocalScreenStream(null);
     localStreamRef.current = null;
+  }, []); // No socket dep — caller emits separately to avoid double emit on cleanup
 
-    if (socket) {
-      socket.emit('peer:leave', { roomId });
+  // FIX 3: replaceTracksOnPeers reads socket from arg/ref, not closure
+  const replaceTracksOnPeers = useCallback(async (currentSocket: Socket) => {
+    const entries = Array.from(peerConnections.current.entries());
+    for (const [peerId, pc] of entries) {
+      // Remove all existing senders
+      pc.getSenders().forEach(sender => pc.removeTrack(sender));
+
+      if (userMediaStreamRef.current) {
+        userMediaStreamRef.current.getTracks().forEach(track => {
+          pc.addTrack(track, userMediaStreamRef.current!);
+        });
+      }
+      if (displayMediaStreamRef.current) {
+        displayMediaStreamRef.current.getTracks().forEach(track => {
+          pc.addTrack(track, displayMediaStreamRef.current!);
+        });
+      }
+
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        currentSocket.emit('peer:offer', { sdp: offer, roomId, targetSocketId: peerId });
+      } catch (e) {
+        console.error('Renegotiate error for peer', peerId, e);
+      }
     }
-  }, [socket, roomId]);
+  }, [roomId]);
 
-  // Initialize Socket Event Listeners
+  // Initialize socket event listeners
   useEffect(() => {
     if (!socket) return;
-    
-    // Announce presence
-    socket.emit('peer:join', { roomId });
+
+    // FIX 4: Only one peer:join emit, with guestName included from the start
+    socket.emit('peer:join', { roomId, guestName });
+
+    // FIX 5: handlePeerLeft defined at effect scope so onconnectionstatechange can reference it
+    const handlePeerLeft = (peerId: string) => {
+      const pc = peerConnections.current.get(peerId);
+      if (pc) {
+        pc.close();
+        peerConnections.current.delete(peerId);
+      }
+      setRemotePeers(prev => prev.filter(p => p.peerId !== peerId));
+    };
 
     const createPeerConnection = (peerId: string) => {
       const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -107,15 +151,14 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
         }
       };
 
-      // Receive remote stream tracks — each track may come from a different stream (cam vs screen)
       pc.ontrack = (event) => {
         const cleanupDeadStreams = () => {
           setRemotePeers(prev => prev.map(p => {
-             if (p.peerId !== peerId) return p;
-             const validStreams = p.streams.filter(s => 
-               s.getTracks().some(t => t.readyState !== 'ended')
-             );
-             return { ...p, streams: validStreams };
+            if (p.peerId !== peerId) return p;
+            const validStreams = p.streams.filter(s =>
+              s.getTracks().some(t => t.readyState !== 'ended')
+            );
+            return { ...p, streams: validStreams };
           }));
         };
 
@@ -124,45 +167,40 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
         setRemotePeers(prev => {
           const peerIdMatch = prev.find(p => p.peerId === peerId);
           const incomingStream = event.streams[0] || new MediaStream([event.track]);
-          
+
           if (peerIdMatch) {
             let updatedStreams = [...peerIdMatch.streams];
             const existingStream = updatedStreams.find(s => s.id === incomingStream.id);
             if (existingStream) {
-              const trackExists = existingStream.getTracks().find(t => t.id === event.track.id);
-              if (!trackExists) {
+              if (!existingStream.getTracks().find(t => t.id === event.track.id)) {
                 existingStream.addTrack(event.track);
               }
             } else {
               updatedStreams.push(incomingStream);
             }
-            
-            // Clean up old streams synchronously just in case some are already ended
-            updatedStreams = updatedStreams.filter(s => 
+            updatedStreams = updatedStreams.filter(s =>
               s.getTracks().some(t => t.readyState !== 'ended')
             );
-
             return prev.map(p => p.peerId === peerId ? { ...p, streams: updatedStreams } : p);
           }
-          
-          // Use Ref to avoid staleness without re-triggering effect
+
           const participant = participantsRef.current.find(p => p.peerId === peerId);
-          return [...prev, { 
-            peerId, 
+          return [...prev, {
+            peerId,
             username: participant?.name || 'Remote Peer',
             isHost: participant?.isHost,
-            streams: [incomingStream] 
+            streams: [incomingStream]
           }];
         });
       };
 
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-          handlePeerLeft(peerId);
+          handlePeerLeft(peerId); // FIX 5: now safely in scope
         }
       };
 
-      // Add our existing local tracks when creating a connection to a new peer
+      // Add existing local tracks
       if (userMediaStreamRef.current) {
         userMediaStreamRef.current.getTracks().forEach(track => {
           pc.addTrack(track, userMediaStreamRef.current!);
@@ -177,17 +215,9 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       return pc;
     };
 
-    const handlePeerLeft = (peerId: string) => {
-      const pc = peerConnections.current.get(peerId);
-      if (pc) {
-        pc.close();
-        peerConnections.current.delete(peerId);
-      }
-      setRemotePeers(prev => prev.filter(p => p.peerId !== peerId));
-    };
-
-    const handlePeerJoined = async ({ peerId, username, isHost }: { peerId: string, username?: string, isHost?: boolean }) => {
-      // Create PC and update peer info immediately to show name even before tracks arrive
+    const handlePeerJoined = async ({ peerId, username, isHost }: {
+      peerId: string; username?: string; isHost?: boolean;
+    }) => {
       setRemotePeers(prev => {
         if (prev.find(p => p.peerId === peerId)) return prev;
         return [...prev, { peerId, username, isHost, streams: [] }];
@@ -203,15 +233,13 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       }
     };
 
-    const handlePeerOffer = async ({ sdp, peerId }: { sdp: any, peerId: string }) => {
+    const handlePeerOffer = async ({ sdp, peerId }: { sdp: RTCSessionDescriptionInit; peerId: string }) => {
       let pc = peerConnections.current.get(peerId);
       if (!pc) {
         pc = createPeerConnection(peerId);
       }
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-        
-        // Clean up streams that might have ended due to renegotiation
         setRemotePeers(prev => prev.map(p => {
           if (p.peerId !== peerId) return p;
           return { ...p, streams: p.streams.filter(s => s.getTracks().some(t => t.readyState !== 'ended')) };
@@ -221,7 +249,6 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
         await pc.setLocalDescription(answer);
         socket.emit('peer:answer', { sdp: answer, roomId, targetSocketId: peerId });
 
-        // Process any queued ICE candidates
         const queued = pendingCandidates.current.get(peerId) || [];
         for (const candidate of queued) {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
@@ -232,23 +259,21 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       }
     };
 
-    const handlePeerAnswer = async ({ sdp, peerId }: { sdp: any, peerId: string }) => {
+    const handlePeerAnswer = async ({ sdp, peerId }: { sdp: RTCSessionDescriptionInit; peerId: string }) => {
       const pc = peerConnections.current.get(peerId);
-      if (pc) {
-        try {
-          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-          // Clean up streams that might have ended due to renegotiation
-          setRemotePeers(prev => prev.map(p => {
-            if (p.peerId !== peerId) return p;
-            return { ...p, streams: p.streams.filter(s => s.getTracks().some(t => t.readyState !== 'ended')) };
-          }));
-        } catch (e) {
-          console.error('Error handling answer', e);
-        }
+      if (!pc) return;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        setRemotePeers(prev => prev.map(p => {
+          if (p.peerId !== peerId) return p;
+          return { ...p, streams: p.streams.filter(s => s.getTracks().some(t => t.readyState !== 'ended')) };
+        }));
+      } catch (e) {
+        console.error('Error handling answer', e);
       }
     };
 
-    const handleIceCandidate = async ({ candidate, peerId }: { candidate: any, peerId: string }) => {
+    const handleIceCandidate = async ({ candidate, peerId }: { candidate: RTCIceCandidateInit; peerId: string }) => {
       const pc = peerConnections.current.get(peerId);
       if (pc && pc.remoteDescription) {
         try {
@@ -263,39 +288,35 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       }
     };
 
-    const handleViewersUpdate = ({ count }: { count: number }) => {
-      setViewerCount(count);
+    const handleViewersUpdate = ({ count }: { count: number }) => setViewerCount(count);
+
+    const handleParticipantsUpdate = ({ participants: updated }: { participants: Participant[] }) => {
+      setParticipants(updated);
+      setRemotePeers(prev => prev.map(peer => {
+        const match = updated.find(p => p.peerId === peer.peerId);
+        return match ? { ...peer, username: match.name, isHost: match.isHost } : peer;
+      }));
     };
 
-    const handleParticipantsUpdate = ({ participants }: { participants: Participant[] }) => {
-      setParticipants(participants);
-      // Update remotePeers usernames if they joined before the participants list sync
-      setRemotePeers(prev => prev.map(peer => {
-        const match = participants.find(p => p.peerId === peer.peerId);
-        if (match) {
-          return { ...peer, username: match.name, isHost: match.isHost };
-        }
-        return peer;
-      }));
+    const handleHostMuted = () => {
+      setIsMicOn(false);
+      isMicOnRef.current = false;
+      if (userMediaStreamRef.current) {
+        userMediaStreamRef.current.getAudioTracks().forEach(t => { t.enabled = false; });
+      }
     };
 
     socket.on('peer:joined', handlePeerJoined);
     socket.on('peer:offer', handlePeerOffer);
     socket.on('peer:answer', handlePeerAnswer);
     socket.on('peer:ice-candidate', handleIceCandidate);
-    socket.on('peer:left', (data) => handlePeerLeft(data.peerId));
+    socket.on('peer:left', ({ peerId }: { peerId: string }) => handlePeerLeft(peerId));
     socket.on('room:viewers_update', handleViewersUpdate);
     socket.on('room:participants_update', handleParticipantsUpdate);
-    socket.on('host:kicked', () => window.location.href = '/');
+    socket.on('host:kicked', () => { window.location.href = '/'; });
     socket.on('host:banned', () => { alert('YOU HAVE BEEN BANNED'); window.location.href = '/'; });
     socket.on('room:ended', () => { alert('THE MEETING HAS ENDED'); window.location.href = '/'; });
-    
-    socket.on('host:muted', () => {
-      setIsMicOn(false);
-      if (userMediaStreamRef.current) {
-        userMediaStreamRef.current.getAudioTracks().forEach(t => { t.enabled = false; });
-      }
-    });
+    socket.on('host:muted', handleHostMuted);
 
     return () => {
       socket.off('peer:joined', handlePeerJoined);
@@ -303,73 +324,49 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       socket.off('peer:answer', handlePeerAnswer);
       socket.off('peer:ice-candidate', handleIceCandidate);
       socket.off('peer:left');
-      socket.off('room:viewers_update');
-      socket.off('room:participants_update');
+      socket.off('room:viewers_update', handleViewersUpdate);
+      socket.off('room:participants_update', handleParticipantsUpdate);
       socket.off('host:kicked');
       socket.off('host:banned');
       socket.off('room:ended');
-      socket.off('host:muted');
+      socket.off('host:muted', handleHostMuted);
+
+      // FIX 6: Emit leave here (once), not inside leaveRoom, to keep leaveRoom dep-free
+      socket.emit('peer:leave', { roomId });
       leaveRoom();
     };
-  }, [socket, roomId, leaveRoom]);
+  }, [socket, roomId, guestName, leaveRoom, replaceTracksOnPeers]);
+  // FIX 4: Removed the separate guestName effect — it's now handled in the main effect above
 
-  // Announce presence with guestName
-  useEffect(() => {
-    if (socket && roomId) {
-      socket.emit('peer:join', { roomId, guestName });
-    }
-  }, [socket, roomId, guestName]);
-
-  // Renegotiate all peer connections when streams change
-  const replaceTracksOnPeers = async () => {
-    peerConnections.current.forEach(async (pc, peerId) => {
-      pc.getSenders().forEach(sender => pc.removeTrack(sender));
-      
-      if (userMediaStreamRef.current) {
-        userMediaStreamRef.current.getTracks().forEach(track => {
-          pc.addTrack(track, userMediaStreamRef.current!);
-        });
-      }
-      if (displayMediaStreamRef.current) {
-        displayMediaStreamRef.current.getTracks().forEach(track => {
-          pc.addTrack(track, displayMediaStreamRef.current!);
-        });
-      }
-      
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket?.emit('peer:offer', { sdp: offer, roomId, targetSocketId: peerId });
-      } catch (e) {
-        console.error('Renegotiate error', e);
-      }
-    });
-  };
-
-  // Handle stream updates — camera/mic/screen toggles
-  const updateLocalTracks = async ({ targetAudio, targetVideo, targetScreen }: {
-    targetAudio?: boolean, targetVideo?: boolean, targetScreen?: boolean
+  // FIX 7: updateLocalTracks reads state from refs to avoid stale closures
+  const updateLocalTracks = useCallback(async ({
+    targetAudio, targetVideo, targetScreen
+  }: {
+    targetAudio?: boolean; targetVideo?: boolean; targetScreen?: boolean;
   }) => {
-    let currentMic = targetAudio !== undefined ? targetAudio : isMicOn;
-    let currentVideo = targetVideo !== undefined ? targetVideo : isCameraOn;
-    let currentScreen = targetScreen !== undefined ? targetScreen : isScreenOn;
+    let currentMic    = targetAudio  !== undefined ? targetAudio  : isMicOnRef.current;
+    let currentVideo  = targetVideo  !== undefined ? targetVideo  : isCameraOnRef.current;
+    let currentScreen = targetScreen !== undefined ? targetScreen : isScreenOnRef.current;
 
-    // 1. Manage UserMedia (Mic/Camera)
     const needsUserMedia = currentMic || currentVideo;
 
     if (needsUserMedia && !userMediaStreamRef.current) {
       try {
-        // Request both audio and video — we enable/disable tracks after acquisition
-        userMediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ 
+        const rawStream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user' },
           audio: AUDIO_CONSTRAINTS,
         });
+
+        // FIX 8: Apply audio filter to a COPY of the stream, keep original ref intact
+        if (!audioFilterRef.current) {
+          audioFilterRef.current = new RetroAudioFilter();
+        }
+        userMediaStreamRef.current = audioFilterRef.current.applyToStream(rawStream);
         userMediaStreamRef.current.getAudioTracks().forEach(t => { t.enabled = currentMic; });
         userMediaStreamRef.current.getVideoTracks().forEach(t => { t.enabled = currentVideo; });
       } catch (e) {
         console.warn('Failed to get both media, trying separate fallback', e);
         try {
-          // Fallback: try requesting only what they explicitly asked for
           userMediaStreamRef.current = await navigator.mediaDevices.getUserMedia({
             video: currentVideo ? { facingMode: 'user' } : false,
             audio: currentMic ? AUDIO_CONSTRAINTS : false,
@@ -386,29 +383,32 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       userMediaStreamRef.current.getVideoTracks().forEach(t => { t.enabled = currentVideo; });
     }
 
-    // Stop and release userMedia entirely when both cam and mic are off
-    if (!needsUserMedia && !currentMic && !currentVideo && userMediaStreamRef.current) {
+    if (!currentMic && !currentVideo && userMediaStreamRef.current) {
       userMediaStreamRef.current.getTracks().forEach(t => t.stop());
       userMediaStreamRef.current = null;
+
+      // Also destroy audio filter when releasing media
+      if (audioFilterRef.current) {
+        audioFilterRef.current.destroy();
+        audioFilterRef.current = null;
+      }
     }
-    
-    // 2. Manage DisplayMedia (Screen Share)
+
     if (currentScreen && !displayMediaStreamRef.current) {
       try {
-        displayMediaStreamRef.current = await navigator.mediaDevices.getDisplayMedia({ 
+        displayMediaStreamRef.current = await navigator.mediaDevices.getDisplayMedia({
           video: { frameRate: { ideal: 30 }, width: { ideal: 1920 } },
-          audio: false 
+          audio: false
         });
         displayMediaStreamRef.current.getVideoTracks()[0].onended = () => {
           updateLocalTracks({ targetScreen: false });
         };
-      } catch(e: any) {
+      } catch (e: any) {
         console.error('Failed to get display media', e);
-        if (e.name === 'NotAllowedError') {
-          alert('Screen share permission denied.');
-        } else {
-          alert('Screen sharing is not supported on this device or browser.');
-        }
+        alert(e.name === 'NotAllowedError'
+          ? 'Screen share permission denied.'
+          : 'Screen sharing is not supported on this device or browser.'
+        );
         currentScreen = false;
       }
     } else if (!currentScreen && displayMediaStreamRef.current) {
@@ -416,20 +416,25 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       displayMediaStreamRef.current = null;
     }
 
-    // Update state
+    // Update refs first, then state
+    isMicOnRef.current    = currentMic;
+    isCameraOnRef.current = currentVideo;
+    isScreenOnRef.current = currentScreen;
+
     setIsMicOn(currentMic);
     setIsCameraOn(currentVideo);
     setIsScreenOn(currentScreen);
     setLocalStream(userMediaStreamRef.current);
     setLocalScreenStream(displayMediaStreamRef.current);
 
-    // Renegotiate with existing peers
-    replaceTracksOnPeers();
-  };
+    if (socket) {
+      await replaceTracksOnPeers(socket);
+    }
+  }, [socket, replaceTracksOnPeers]);
 
-  const toggleMic = () => updateLocalTracks({ targetAudio: !isMicOn });
-  const toggleCamera = () => updateLocalTracks({ targetVideo: !isCameraOn });
-  const toggleScreenShare = () => updateLocalTracks({ targetScreen: !isScreenOn });
+  const toggleMic         = useCallback(() => updateLocalTracks({ targetAudio:  !isMicOnRef.current }),    [updateLocalTracks]);
+  const toggleCamera      = useCallback(() => updateLocalTracks({ targetVideo:  !isCameraOnRef.current }), [updateLocalTracks]);
+  const toggleScreenShare = useCallback(() => updateLocalTracks({ targetScreen: !isScreenOnRef.current }), [updateLocalTracks]);
 
   return {
     localStream,

@@ -275,19 +275,57 @@ export default function RoomView({ room, isHost, joinToken, guestName }: { room:
       element: <VideoMonitor stream={localScreenStream} muted={true} label="YOUR SCREEN" isLive={true} />
     }] : []),
     // Remote peer tiles
-    ...remotePeers.flatMap(peer =>
-      peer.streams.map((stream, idx) => {
-        const id = `${peer.peerId}-${idx}`;
-        if (id === pinnedId) return null;
-        return {
-          id,
-          peerId: peer.peerId,
-          labelIdx: idx,
-          element: <VideoMonitor stream={stream} muted={false} label={peer.username || `PEER_${peer.peerId.slice(0,4)}${idx > 0 ? ' (SCR)' : ''}`} isLive={true} interactive={false} />,
-          raised: raisedHands.has(peer.peerId),
-        };
-      }).filter(Boolean)
-    ),
+    // Remote peer tiles — one tile per peer (video stream preferred; screen share gets its own tile)
+...remotePeers.flatMap(peer => {
+  // Separate video/cam streams from screen-share streams
+  const camStream = peer.streams.find((s, idx) => idx === 0) ?? null;
+  const screenStreams = peer.streams.slice(1);
+
+  const tiles = [];
+
+  // Single cam tile per peer
+  const camId = `${peer.peerId}-0`;
+  if (camId !== pinnedId) {
+    tiles.push({
+      id: camId,
+      peerId: peer.peerId,
+      labelIdx: 0,
+      element: (
+        <VideoMonitor
+          stream={camStream}
+          muted={false}
+          label={peer.username || `PEER_${peer.peerId.slice(0, 4)}`}
+          isLive={true}
+          interactive={false}
+        />
+      ),
+      raised: raisedHands.has(peer.peerId),
+    });
+  }
+
+  // Screen share tiles (separate, clearly labelled)
+  screenStreams.forEach((stream, i) => {
+    const id = `${peer.peerId}-${i + 1}`;
+    if (id === pinnedId) return;
+    tiles.push({
+      id,
+      peerId: peer.peerId,
+      labelIdx: i + 1,
+      element: (
+        <VideoMonitor
+          stream={stream}
+          muted={false}
+          label={`${peer.username || `PEER_${peer.peerId.slice(0, 4)}`} (SCR)`}
+          isLive={true}
+          interactive={false}
+        />
+      ),
+      raised: false,
+    });
+  });
+
+  return tiles;
+}),
   ].filter(Boolean) as any[];
 
   const gridColsClass = allTiles.length <= 1
