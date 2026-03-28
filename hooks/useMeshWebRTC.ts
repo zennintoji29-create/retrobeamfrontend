@@ -18,32 +18,15 @@ const IS_ANDROID_WEBVIEW =
 // ─────────────────────────────────────────────────────────────────────────────
 // ICE CONFIGURATION
 // ─────────────────────────────────────────────────────────────────────────────
-const ICE_SERVERS: RTCConfiguration = {
+const DEFAULT_ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun.relay.metered.ca:80' },
-    {
-      urls: 'turn:global.relay.metered.ca:80',
-      username: '465937840a13d388f0894b15',
-      credential: 'HC/ZZ7If5vljoYZ9',
-    },
-    {
-      urls: 'turn:global.relay.metered.ca:80?transport=tcp',
-      username: '465937840a13d388f0894b15',
-      credential: 'HC/ZZ7If5vljoYZ9',
-    },
-    {
-      urls: 'turn:global.relay.metered.ca:443',
-      username: '465937840a13d388f0894b15',
-      credential: 'HC/ZZ7If5vljoYZ9',
-    },
-    {
-      urls: 'turns:global.relay.metered.ca:443?transport=tcp',
-      username: '465937840a13d388f0894b15',
-      credential: 'HC/ZZ7If5vljoYZ9',
-    },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
+    { urls: 'stun:stun.services.mozilla.com' }
   ],
   iceTransportPolicy: 'all',
   bundlePolicy: 'max-bundle',
@@ -183,6 +166,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isScreenOn, setIsScreenOn] = useState(false);
   const [viewerCount, setViewerCount] = useState(1);
+  const iceServersRef = useRef<RTCConfiguration>(DEFAULT_ICE_SERVERS);
 
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingCandidates = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
@@ -207,6 +191,18 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
   const gainNodeRef = useRef<GainNode | null>(null);
   const compressorNodeRef = useRef<DynamicsCompressorNode | null>(null);
   const audioSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+  // Initialize ICE servers securely from backend on mount
+  useEffect(() => {
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'}/ice`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.iceServers) {
+          iceServersRef.current = { ...DEFAULT_ICE_SERVERS, iceServers: data.iceServers };
+        }
+      })
+      .catch(err => console.error('Failed to fetch premium ICE servers', err));
+  }, []);
 
   useEffect(() => { participantsRef.current = participants; }, [participants]);
 
@@ -490,10 +486,10 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
     // FIX (Bug 9): Only emit peer:join after socket is confirmed connected.
     // useSocket already guarantees socket is non-null only after connect,
     // but we double-check here defensively.
-    const initConnection = () => {
+    const initConnection = async () => {
+      // Get media FIRST, then join — so tracks exist when the first offer fires
+      await updateLocalTracks({ targetAudio: true, targetVideo: true });
       socket.emit('peer:join', { roomId });
-      // Auto-acquire media immediately so tracks early when offers flow
-      updateLocalTracks({ targetAudio: true, targetVideo: true });
     };
 
     if (!socket.connected) {
@@ -511,7 +507,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
 
     // ── CREATE PEER CONNECTION ──────────────────────────────────────────
     const createPeerConnection = (peerId: string, isOfferer: boolean): RTCPeerConnection => {
-      const pc = new RTCPeerConnection(ICE_SERVERS);
+      const pc = new RTCPeerConnection(iceServersRef.current);
       peerConnections.current.set(peerId, pc);
 
       const roleMap = new Map<RTCRtpSender, SenderRole>();
@@ -538,28 +534,9 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
       // FIX: onnegotiationneeded is suppressed here because the caller
       // (handlePeerJoined) creates the offer immediately after addTrack.
       // Allowing onnegotiationneeded to also fire would cause a double-offer
-      // race. We set a flag on the pc to suppress it.
+      // race and m-line ordering crashes.
       (pc as any).__suppressNegotiation = false;
-      pc.onnegotiationneeded = async () => {
-        if ((pc as any).__suppressNegotiation) return;
-        // Only the offerer (the peer who initiated) drives renegotiation.
-        // The impolite side should not spontaneously send offers — that causes glare.
-        if (!isOfferer) return;
-        if (makingOfferRef.current || pc.signalingState !== 'stable') return;
-        try {
-          makingOfferRef.current = true;
-          const offer = await pc.createOffer();
-          // Double-check state hasn't changed while we awaited createOffer
-          if (pc.signalingState !== 'stable') return;
-          offer.sdp = patchOpusSDP(offer.sdp ?? '');
-          await pc.setLocalDescription(offer);
-          socket.emit('peer:offer', { sdp: pc.localDescription, roomId, targetSocketId: peerId });
-        } catch (e) {
-          console.error('onnegotiationneeded offer failed', e);
-        } finally {
-          makingOfferRef.current = false;
-        }
-      };
+      pc.onnegotiationneeded = () => {};
 
       // ── ONTRACK — FIX ────────────────────────────────────────────────
       // The original code tried to detect screen vs camera tracks by
