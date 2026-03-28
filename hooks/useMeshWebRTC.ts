@@ -194,7 +194,9 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
 
   // Initialize ICE servers securely from backend on mount
   useEffect(() => {
-    fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'}/ice`)
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'}/ice`, {
+      credentials: 'include',
+    })
       .then(r => r.json())
       .then(data => {
         if (data.iceServers) {
