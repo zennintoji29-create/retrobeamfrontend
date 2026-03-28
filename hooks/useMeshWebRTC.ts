@@ -23,10 +23,27 @@ const ICE_SERVERS: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    { urls: 'stun:global.stun.twilio.com:3478' },
-    { urls: 'stun:stun.services.mozilla.com' }
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    {
+      urls: 'turn:global.relay.metered.ca:80',
+      username: '465937840a13d388f0894b15',
+      credential: 'HC/ZZ7If5vljoYZ9',
+    },
+    {
+      urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+      username: '465937840a13d388f0894b15',
+      credential: 'HC/ZZ7If5vljoYZ9',
+    },
+    {
+      urls: 'turn:global.relay.metered.ca:443',
+      username: '465937840a13d388f0894b15',
+      credential: 'HC/ZZ7If5vljoYZ9',
+    },
+    {
+      urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+      username: '465937840a13d388f0894b15',
+      credential: 'HC/ZZ7If5vljoYZ9',
+    },
   ],
   iceTransportPolicy: 'all',
   bundlePolicy: 'max-bundle',
