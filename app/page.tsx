@@ -5,14 +5,7 @@ import { motion, useMotionValue, useSpring } from 'framer-motion';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
-
-const TOTAL_FRAMES = 192;
-const FRAME_DELAY_MS = 41;
-
-function getFrameSrc(index: number): string {
-  const n = String(index).padStart(3, '0');
-  return `/sequence/frame_${n}_delay-0.041s.webp`;
-}
+import { useFrameSequence, TOTAL_FRAMES } from '@/hooks/useFrameSequence';
 
 // ── Magnetic pull button ──────────────────────────────────────────────────────
 function Magnetic({ children, strength = 0.28 }: { children: React.ReactElement; strength?: number }) {
@@ -71,8 +64,7 @@ function ControlChip({ label, active, icon }: { label: string; active?: boolean;
 }
 
 export default function Home() {
-  const [currentFrame, setCurrentFrame] = useState(0);
-  const frameRef = useRef(0);
+  const { currentFrame, getFrameSrc } = useFrameSequence();
   const monitorRef = useRef<HTMLDivElement>(null);
   const { user, loading } = useAuth();
 
@@ -89,20 +81,6 @@ export default function Home() {
     rotX.set(ny * -7);
     rotY.set(nx * 7);
   }, [rotX, rotY]);
-
-  useEffect(() => {
-    // Preload frames in background to prevent (canceled) network requests
-    for (let i = 0; i < TOTAL_FRAMES; i++) {
-      const img = new window.Image();
-      img.src = getFrameSrc(i);
-    }
-
-    const id = setInterval(() => {
-      frameRef.current = (frameRef.current + 1) % TOTAL_FRAMES;
-      setCurrentFrame(frameRef.current);
-    }, FRAME_DELAY_MS);
-    return () => clearInterval(id);
-  }, []);
 
   const pct = (currentFrame / (TOTAL_FRAMES - 1)) * 100;
 
@@ -436,8 +414,10 @@ export default function Home() {
               {/* Video */}
               <div style={{ position: 'relative', aspectRatio: '16/9', background: '#000', overflow: 'hidden' }}>
                 <img
+                  key={currentFrame}
                   src={getFrameSrc(currentFrame)}
                   alt="Video Sequence Frame"
+                  decoding="async"
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />
                 {/* Vignette */}
