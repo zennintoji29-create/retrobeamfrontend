@@ -159,7 +159,10 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       }
       const source    = ctx.createMediaStreamSource(rawStream);
       const gain      = ctx.createGain();
-      gain.gain.value = isMicOnRef.current ? 1 : 0;
+      // Always init to 1 — isMicOnRef hasn't been updated yet when this
+      // pipeline is first built (the ref is set at the end of updateLocalTracks).
+      // The track's .enabled flag is the real gate; gain handles smooth ramp.
+      gain.gain.value = 1;
       gainNodeRef.current = gain;
 
       const comp = ctx.createDynamicsCompressor();
@@ -306,10 +309,14 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       };
 
       pc.onnegotiationneeded = async () => {
-        if (isOfferer && !makingOffer && pc.signalingState === 'stable' && !pc.remoteDescription) return;
+        // Only the offerer (the peer who initiated) drives renegotiation.
+        // The impolite side should not spontaneously send offers — that causes glare.
+        if (!isOfferer) return;
+        if (makingOffer || pc.signalingState !== 'stable') return;
         try {
           makingOffer = true;
           const offer = await pc.createOffer();
+          // Double-check state hasn't changed while we awaited createOffer
           if (pc.signalingState !== 'stable') return;
           offer.sdp = patchOpusSDP(offer.sdp ?? '');
           await pc.setLocalDescription(offer);

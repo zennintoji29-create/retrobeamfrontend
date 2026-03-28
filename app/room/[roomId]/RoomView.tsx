@@ -336,10 +336,14 @@ export default function RoomView({
   const showReconnecting = wasConnected && !isConnected;
 
   // ── Speaking detection ────────────────────────────────────────────────────
+  // For each remote peer, pick the stream that actually carries audio tracks
+  // (streams[0] is not always the audio-bearing stream when screen share is active).
   const speakingStreams = [
-    // local mic stream — we track our own speaking for UI feedback
     { id: 'local', stream: localStream },
-    ...remotePeers.map(p => ({ id: p.peerId, stream: p.streams[0] ?? null })),
+    ...remotePeers.map(p => {
+      const audioStream = p.streams.find(s => s.getAudioTracks().length > 0) ?? p.streams[0] ?? null;
+      return { id: p.peerId, stream: audioStream };
+    }),
   ];
   const speaking = useSpeakingDetection(speakingStreams);
 

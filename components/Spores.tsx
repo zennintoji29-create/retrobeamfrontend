@@ -6,8 +6,8 @@ export default function Spores() {
   const [spores, setSpores] = useState<any[]>([]);
 
   useEffect(() => {
-    // Generate random spores
-    const newSpores = Array.from({ length: 60 }).map((_, i) => ({
+    // Generate random spores (Reduced count to 20 to prevent severe mobile lag)
+    const newSpores = Array.from({ length: 20 }).map((_, i) => ({
       id: i,
       left: `${Math.random() * 100}%`,
       animationDuration: `${Math.random() * 15 + 10}s`, // slow floating
@@ -23,7 +23,7 @@ export default function Spores() {
       {spores.map(spore => (
         <div
           key={spore.id}
-          className="absolute rounded-full bg-white blur-[1px] mix-blend-screen animate-float-up"
+          className="absolute rounded-full bg-white mix-blend-screen animate-float-up will-change-transform"
           style={{
             left: spore.left,
             width: spore.size,

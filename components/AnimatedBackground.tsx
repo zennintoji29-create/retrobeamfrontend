@@ -68,6 +68,11 @@ export default function AnimatedBackground() {
     }
 
     function loop(timestamp: number) {
+      if (document.hidden) {
+        // Pause heavy canvas drawing if the tab isn't active
+        animationId = requestAnimationFrame(loop);
+        return;
+      }
       const elapsed = timestamp - lastTime;
       if (elapsed >= FRAME_DELAY) {
         lastTime = timestamp;
@@ -110,6 +115,8 @@ export default function AnimatedBackground() {
         opacity: 0.85,
         mixBlendMode: 'screen',
         display: 'block',
+        willChange: 'transform, opacity',
+        transform: 'translateZ(0)', // Force dedicated GPU layer
       }}
     />
   );
