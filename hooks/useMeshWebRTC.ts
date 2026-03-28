@@ -531,7 +531,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
         // Only the offerer (the peer who initiated) drives renegotiation.
         // The impolite side should not spontaneously send offers — that causes glare.
         if (!isOfferer) return;
-        if (makingOffer || pc.signalingState !== 'stable') return;
+        if (makingOfferRef.current || pc.signalingState !== 'stable') return;
         try {
           makingOfferRef.current = true;
           const offer = await pc.createOffer();

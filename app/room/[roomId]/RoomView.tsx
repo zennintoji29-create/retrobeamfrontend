@@ -183,6 +183,7 @@ export default function RoomView({
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [raisedHands, setRaisedHands] = useState<Set<string>>(new Set());
   const [showMobilePanel, setShowMobilePanel] = useState(false);
+  const [wasConnected, setWasConnected] = useState(false);
 
   // Track connection drops vs initial connect
   useEffect(() => {
@@ -191,17 +192,7 @@ export default function RoomView({
 
   const showReconnecting = wasConnected && !isConnected;
 
-  // ── Speaking detection ────────────────────────────────────────────────────
-  // For each remote peer, pick the stream that actually carries audio tracks
-  // (streams[0] is not always the audio-bearing stream when screen share is active).
-  const speakingStreams = [
-    { id: 'local', stream: localStream },
-    ...remotePeers.map(p => {
-      const audioStream = p.streams.find(s => s.getAudioTracks().length > 0) ?? p.streams[0] ?? null;
-      return { id: p.peerId, stream: audioStream };
-    }),
-  ];
-  const speaking = useSpeakingDetection(speakingStreams);
+
 
   // ── Socket events ─────────────────────────────────────────────────────────
   useEffect(() => {
