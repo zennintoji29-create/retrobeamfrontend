@@ -12,6 +12,7 @@ import { useAuth } from '@/hooks/useAuth';
 export default function CreateRoom() {
   const { user, loading, logout } = useAuth(true); // Must be logged in
   const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
   const [streamType, setStreamType] = useState('camera');
   const [maxParticipants, setMaxParticipants] = useState(10);
   const [error, setError] = useState('');
@@ -27,6 +28,7 @@ export default function CreateRoom() {
     try {
       const res = await api.post('/rooms/create', {
         name: name || `${user.username}'s Room`,
+        password: password || undefined,
         streamType,
         maxParticipants: Number(maxParticipants)
       });
@@ -53,6 +55,14 @@ export default function CreateRoom() {
               placeholder={`${user.username}'s Session`}
               value={name}
               onChange={(e) => setName(e.target.value)}
+            />
+
+            <RetroInput 
+              label="Room Password (Optional)" 
+              type="password"
+              placeholder="Leave blank for public room"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
             />
 
             <div className="flex flex-col gap-2">
