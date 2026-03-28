@@ -484,12 +484,16 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null) {
     // FIX (Bug 9): Only emit peer:join after socket is confirmed connected.
     // useSocket already guarantees socket is non-null only after connect,
     // but we double-check here defensively.
-    if (!socket.connected) {
-      socket.once('connect', () => {
-        socket.emit('peer:join', { roomId });
-      });
-    } else {
+    const initConnection = () => {
       socket.emit('peer:join', { roomId });
+      // Auto-acquire media immediately so tracks early when offers flow
+      updateLocalTracks({ targetAudio: true, targetVideo: true });
+    };
+
+    if (!socket.connected) {
+      socket.once('connect', initConnection);
+    } else {
+      initConnection();
     }
 
     // Per-connection glare state stored in a WeakMap to avoid memory leaks

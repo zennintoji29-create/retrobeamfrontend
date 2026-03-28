@@ -6,7 +6,7 @@ export const getSocket = (token?: string): Socket => {
   if (!socket) {
     socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000', {
       withCredentials: true,
-      autoConnect: false,
+      autoConnect: true,
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
