@@ -2,7 +2,7 @@ import { io, Socket } from 'socket.io-client';
 
 let socket: Socket | null = null;
 
-export const getSocket = (token?: string) => {
+export const getSocket = (token?: string): Socket => {
   if (!socket) {
     socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000', {
       withCredentials: true,
@@ -12,16 +12,13 @@ export const getSocket = (token?: string) => {
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 20000,
-      transports: ['websocket', 'polling'], // prefer WebSocket — lower latency, less audio cracking
+      auth: token ? { token } : {},
+      transports: ['websocket', 'polling'],
     });
+  } else if (token && socket.auth) {
+    (socket.auth as Record<string, string>).token = token;
   }
 
-  if (token) {
-    socket.auth = { token };
-  } else {
-    socket.auth = {};
-  }
-  
   return socket;
 };
 

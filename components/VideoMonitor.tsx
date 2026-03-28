@@ -9,12 +9,6 @@ interface Props {
   isLive?: boolean;
   interactive?: boolean;
   cameraEnabled?: boolean;
-  /** Pulsing speaking ring when the peer is talking */
-  isSpeaking?: boolean;
-  /** Connection quality indicator dot */
-  connectionQuality?: 'good' | 'poor' | 'lost' | null;
-  /** Avatar initials shown in no-video state */
-  initials?: string;
 }
 
 export default function VideoMonitor({
@@ -24,223 +18,335 @@ export default function VideoMonitor({
   isLive = false,
   interactive = true,
   cameraEnabled = true,
-  isSpeaking = false,
-  connectionQuality = null,
-  initials,
 }: Props) {
-  const videoRef     = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [isPip,        setIsPip]        = useState(false);
+  const [isPip, setIsPip] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [needsTap,     setNeedsTap]     = useState(false);
-  const [isBuffering,  setIsBuffering]  = useState(false);
+  const [needsTap, setNeedsTap] = useState(false);
+  const [hasVideoTrack, setHasVideoTrack] = useState(false);
 
-  // Edge case: stream with only audio tracks (mic-only peer) — show avatar card
-  const hasVideoTrack = !!stream?.getVideoTracks().length;
-  const showVideo     = !!stream && cameraEnabled && hasVideoTrack;
-  const showAudioOnly = !!stream && (!cameraEnabled || !hasVideoTrack);
+  // Guard against overlapping play() calls
+  const playPromiseRef = useRef<Promise<void> | null>(null);
+  // Track the stream id we last attached so we can avoid redundant re-attaches
+  const attachedStreamIdRef = useRef<string | null>(null);
 
-  const avatarText = initials || label.replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '??';
+  // ─────────────────────────────────────────────────────────────────────────
+  // SAFE PLAY
+  // ─────────────────────────────────────────────────────────────────────────
+  const safePlay = useCallback((video: HTMLVideoElement) => {
+    // Bail if a play() is already in flight
+    if (playPromiseRef.current) return;
 
-  // ── Stream attachment ────────────────────────────────────────────────────
-  const attachStream = useCallback((s: MediaStream | null) => {
-    const video = videoRef.current;
-    if (!video || video.srcObject === s) return;
-    video.srcObject = s;
-    if (s) {
-      video.play()
-        .then(() => { setNeedsTap(false); setIsBuffering(false); })
+    const doPlay = () => {
+      playPromiseRef.current = video.play()
+        .then(() => {
+          setNeedsTap(false);
+          playPromiseRef.current = null;
+        })
         .catch((e: DOMException) => {
-          if (e.name === 'NotAllowedError') setNeedsTap(true);
-          // NotSupportedError can happen if stream has 0 tracks at attach time — safe to ignore
+          playPromiseRef.current = null;
+          if (e.name === 'NotAllowedError') {
+            // Browser requires a user gesture — show tap-to-play overlay
+            setNeedsTap(true);
+          } else if (e.name === 'AbortError') {
+            // Benign — another load() interrupted this play(), will retry
+          } else {
+            console.warn('video.play() failed:', e.name, e.message);
+          }
         });
+    };
+
+    if (video.readyState >= 2) {
+      doPlay();
+    } else {
+      const onReady = () => {
+        video.removeEventListener('loadeddata', onReady);
+        doPlay();
+      };
+      // FIX: listen for 'loadeddata' (readyState ≥ 2) rather than
+      // 'loadedmetadata' (readyState ≥ 1) — ensures enough data is buffered
+      // before we call play(), which reduces AbortError noise on Safari.
+      video.addEventListener('loadeddata', onReady);
     }
   }, []);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // CHECK VIDEO TRACKS
+  // ─────────────────────────────────────────────────────────────────────────
+  const refreshHasVideoTrack = useCallback((s: MediaStream | null) => {
+    if (!s) {
+      setHasVideoTrack(false);
+      return;
+    }
+    const live = s.getVideoTracks().some(
+      t => t.readyState === 'live' && t.enabled,
+    );
+    setHasVideoTrack(live);
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ATTACH STREAM
+  //
+  // FIX (vs original): The original called video.load() AFTER setting
+  // srcObject. On Safari this resets the element and clears srcObject,
+  // causing a blank video. The correct sequence is:
+  //   1. pause()
+  //   2. srcObject = null  (detach old stream)
+  //   3. load()            (reset element state)
+  //   4. srcObject = newStream
+  //   5. play()
+  //
+  // We also skip re-attaching when the stream id hasn't changed (avoids
+  // an unnecessary flicker on React re-renders that pass the same stream).
+  // ─────────────────────────────────────────────────────────────────────────
+  const attachStream = useCallback((s: MediaStream | null) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const incomingId = s?.id ?? null;
+
+    // Skip if same stream is already attached
+    if (incomingId !== null && incomingId === attachedStreamIdRef.current) {
+      // Still refresh hasVideoTrack in case tracks changed on the same stream
+      refreshHasVideoTrack(s);
+      return;
+    }
+
+    // Cancel any in-flight play() before we touch the element
+    if (playPromiseRef.current) {
+      playPromiseRef.current.then(() => attachStream(s)).catch(() => attachStream(s));
+      return;
+    }
+
+    // 1. Pause
+    if (!video.paused) {
+      video.pause();
+    }
+
+    // 2. Detach old stream
+    video.srcObject = null;
+
+    // 3. Reset element (must happen BEFORE setting new srcObject)
+    video.load();
+
+    attachedStreamIdRef.current = incomingId;
+
+    if (s) {
+      // 4. Attach new stream
+      video.srcObject = s;
+      refreshHasVideoTrack(s);
+      // 5. Play
+      safePlay(video);
+    } else {
+      setHasVideoTrack(false);
+      setNeedsTap(false);
+    }
+  }, [safePlay, refreshHasVideoTrack]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // STREAM CHANGE EFFECT
+  // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     attachStream(stream);
     if (!stream) return;
-    const refresh = () => {
-      const video = videoRef.current;
-      if (!video) return;
-      video.srcObject = null;
-      video.srcObject = stream;
-      video.play().catch(() => {});
-    };
-    stream.addEventListener('addtrack',    refresh);
-    stream.addEventListener('removetrack', refresh);
-    return () => {
-      stream.removeEventListener('addtrack',    refresh);
-      stream.removeEventListener('removetrack', refresh);
-    };
-  }, [stream, attachStream]);
 
-  // ── Buffer / stall detection ─────────────────────────────────────────────
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    const on  = () => setIsBuffering(true);
-    const off = () => setIsBuffering(false);
-    v.addEventListener('waiting', on);
-    v.addEventListener('stalled', on);
-    v.addEventListener('playing', off);
-    v.addEventListener('canplay', off);
-    return () => {
-      v.removeEventListener('waiting', on);
-      v.removeEventListener('stalled', on);
-      v.removeEventListener('playing', off);
-      v.removeEventListener('canplay', off);
+    // Re-attach when the browser adds/removes tracks on the same stream object
+    // (e.g. when replaceTrack changes the underlying track mid-session).
+    const onAddTrack = (e: MediaStreamTrackEvent) => {
+      if (e.track.kind === 'video') {
+        e.track.addEventListener('unmute', () => refreshHasVideoTrack(stream));
+        e.track.addEventListener('ended', () => refreshHasVideoTrack(stream));
+        refreshHasVideoTrack(stream);
+        // Force video element to pick up the new track
+        const video = videoRef.current;
+        if (video) {
+          // Only re-attach if this is a new stream id (shouldn't be, but be safe)
+          if (video.srcObject !== stream) {
+            attachStream(stream);
+          } else {
+            // Same stream object, track was added — reload so the element notices
+            if (playPromiseRef.current) return;
+            video.pause();
+            video.srcObject = null;
+            video.load();
+            video.srcObject = stream;
+            safePlay(video);
+          }
+        }
+      }
     };
+
+    const onRemoveTrack = (e: MediaStreamTrackEvent) => {
+      if (e.track.kind === 'video') {
+        refreshHasVideoTrack(stream);
+      }
+    };
+
+    // Per-track mute/unmute listeners — remote tracks mute when disabled
+    const trackCleanups: (() => void)[] = [];
+    const attachTrackListeners = () => {
+      stream.getTracks().forEach(track => {
+        const onMute = () => {
+          if (track.kind === 'video') setHasVideoTrack(false);
+        };
+        const onUnmute = () => {
+          if (track.kind === 'video') setHasVideoTrack(true);
+        };
+        track.addEventListener('mute', onMute);
+        track.addEventListener('unmute', onUnmute);
+        trackCleanups.push(() => {
+          track.removeEventListener('mute', onMute);
+          track.removeEventListener('unmute', onUnmute);
+        });
+      });
+    };
+    attachTrackListeners();
+
+    stream.addEventListener('addtrack', onAddTrack);
+    stream.addEventListener('removetrack', onRemoveTrack);
+
+    return () => {
+      stream.removeEventListener('addtrack', onAddTrack);
+      stream.removeEventListener('removetrack', onRemoveTrack);
+      trackCleanups.forEach(fn => fn());
+    };
+  }, [stream, attachStream, safePlay, refreshHasVideoTrack]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FULLSCREEN LISTENER
+  // ─────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
-  // ── Fullscreen tracking ──────────────────────────────────────────────────
-  useEffect(() => {
-    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener('fullscreenchange', onFs);
-    return () => document.removeEventListener('fullscreenchange', onFs);
-  }, []);
-
-  const handleManualPlay = () =>
-    videoRef.current?.play().then(() => setNeedsTap(false)).catch(console.warn);
+  // ─────────────────────────────────────────────────────────────────────────
+  // HANDLERS
+  // ─────────────────────────────────────────────────────────────────────────
+  const handleManualPlay = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    playPromiseRef.current = null;
+    safePlay(video);
+  };
 
   const togglePip = async () => {
-    if (!videoRef.current || !document.pictureInPictureEnabled) return;
+    if (!videoRef.current) return;
+    if (!document.pictureInPictureEnabled) return;
     try {
-      document.pictureInPictureElement
-        ? (await document.exitPictureInPicture(), setIsPip(false))
-        : (await videoRef.current.requestPictureInPicture(), setIsPip(true));
-    } catch (e) { console.error('PIP:', e); }
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+        setIsPip(false);
+      } else {
+        await videoRef.current.requestPictureInPicture();
+        setIsPip(true);
+      }
+    } catch (err) {
+      console.error('PIP Error:', err);
+    }
   };
 
   const toggleFullscreen = async () => {
     if (!containerRef.current) return;
     try {
-      document.fullscreenElement
-        ? await document.exitFullscreen()
-        : await containerRef.current.requestFullscreen();
-    } catch (e) { console.error('FS:', e); }
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await containerRef.current.requestFullscreen();
+      }
+    } catch (err) {
+      console.error('Fullscreen Error:', err);
+    }
   };
 
   const pipAvailable = typeof document !== 'undefined' && !!document.pictureInPictureEnabled;
 
-  const qualityDot = connectionQuality === 'good' ? 'bg-green-400'
-                   : connectionQuality === 'poor' ? 'bg-yellow-400 animate-pulse'
-                   : connectionQuality === 'lost' ? 'bg-red-500 animate-pulse'
-                   : null;
+  // FIX: For remote peers, cameraEnabled is not passed (defaults true), so
+  // we must also check hasVideoTrack to decide whether to show "CAM OFF".
+  // Show cam-off overlay only when stream exists but has no live video track.
+  const showCamOff = stream !== null && (!cameraEnabled || !hasVideoTrack);
 
   return (
-    <div
-      ref={containerRef}
-      className="relative w-full h-full bg-[#0f0a0a] overflow-hidden flex flex-col select-none"
-    >
-      {/* Speaking ring */}
-      {isSpeaking && (
-        <div
-          className="absolute inset-0 z-[5] pointer-events-none"
-          style={{ boxShadow: 'inset 0 0 0 3px #FFDE42, inset 0 0 20px 2px rgba(255,222,66,0.12)' }}
-        />
-      )}
+    <div ref={containerRef} className="relative w-full h-full bg-[#0f0a0a] overflow-hidden flex flex-col">
+      {stream ? (
+        <>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted={muted}
+            preload="auto"
+            className="w-full h-full object-contain"
+            disablePictureInPicture={!interactive}
+            style={{ pointerEvents: 'none' }}
+          />
 
-      {/* Video element — always mounted, visibility controlled via opacity */}
-      <video
-        ref={videoRef}
-        autoPlay playsInline
-        muted={muted}
-        disablePictureInPicture={!interactive}
-        className={`absolute inset-0 w-full h-full object-contain transition-opacity duration-200
-          ${showVideo ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-      />
+          {/* Tap-to-play overlay (autoplay blocked by browser) */}
+          {needsTap && (
+            <button
+              onClick={handleManualPlay}
+              className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0f0a0a]/80 z-10"
+            >
+              <div className="w-16 h-16 border-[3px] border-[#FFDE42] flex items-center justify-center">
+                <svg className="w-8 h-8 text-[#FFDE42]" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </div>
+              <span className="text-[#FFDE42] font-heading text-sm tracking-widest uppercase font-bold">
+                TAP TO PLAY
+              </span>
+            </button>
+          )}
 
-      {/* ── No-video state ────────────────────────────────────────────────── */}
-      {!showVideo && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 pb-7">
-          {/* Avatar square */}
-          <div
-            className={`w-14 h-14 sm:w-16 sm:h-16 border-[3px] flex items-center justify-center
-              font-heading font-black text-xl sm:text-2xl transition-colors duration-200
-              ${isSpeaking
-                ? 'border-[#FFDE42] text-[#FFDE42] bg-[#FFDE42]/10'
-                : 'border-[#4C5C2D] text-[#4C5C2D]'}`}
-          >
-            {avatarText}
-          </div>
-
-          {showAudioOnly ? (
-            /* Audio-only: animated waveform bars */
-            <div className="flex items-end gap-[3px] h-4">
-              {[0.35, 0.65, 1, 0.55, 0.8, 0.45, 0.9, 0.5, 0.7].map((h, i) => (
-                <div
-                  key={i}
-                  className={`w-[3px] rounded-sm transition-all duration-100
-                    ${isSpeaking ? 'bg-[#FFDE42]' : 'bg-[#4C5C2D]'}`}
-                  style={{
-                    height: isSpeaking ? `${h * 16}px` : '3px',
-                    transitionDelay: `${i * 40}ms`,
-                  }}
-                />
-              ))}
+          {/* Camera off overlay */}
+          {showCamOff && !needsTap && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0f0a0a]/95 z-10">
+              <div className="w-14 h-14 border-[3px] border-[#4C5C2D] flex items-center justify-center">
+                <svg className="w-7 h-7 text-[#4C5C2D]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="square" strokeWidth={2}
+                    d="M3 3l18 18M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M12 18.75H4.5a2.25 2.25 0 01-2.25-2.25V9" />
+                </svg>
+              </div>
+              <span className="text-[#4C5C2D] font-heading text-sm tracking-widest uppercase font-bold">CAM OFF</span>
             </div>
-          ) : (
-            /* No stream: camera icon */
-            <svg className="w-6 h-6 text-[#4C5C2D]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="square" strokeWidth={1.5}
+          )}
+        </>
+      ) : (
+        /* No stream at all */
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0f0a0a]">
+          <div className="w-16 h-16 border-[3px] border-[#4C5C2D] flex items-center justify-center">
+            <svg className="w-8 h-8 text-[#4C5C2D]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="square" strokeLinejoin="miter" strokeWidth={1.5}
                 d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-7.5A2.25 2.25 0 0013.5 6.75h-9A2.25 2.25 0 002.25 9v7.5A2.25 2.25 0 004.5 18.75z" />
             </svg>
-          )}
-
-          <span
-            className={`font-heading text-[9px] tracking-[0.15em] uppercase font-bold transition-colors duration-200
-              ${isSpeaking ? 'text-[#FFDE42]' : 'text-[#4C5C2D]'}`}
-          >
-            {showAudioOnly ? (isSpeaking ? 'SPEAKING' : 'CAM OFF') : 'NO SIGNAL'}
-          </span>
-        </div>
-      )}
-
-      {/* ── Buffering spinner ─────────────────────────────────────────────── */}
-      {isBuffering && showVideo && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-20 pointer-events-none">
-          <div className="w-7 h-7 border-[2px] border-[#FFDE42] border-t-transparent rounded-full animate-spin" />
-        </div>
-      )}
-
-      {/* ── Tap-to-play ───────────────────────────────────────────────────── */}
-      {needsTap && (
-        <button
-          onClick={handleManualPlay}
-          className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0f0a0a]/80 z-20"
-        >
-          <div className="w-14 h-14 border-[3px] border-[#FFDE42] flex items-center justify-center">
-            <svg className="w-7 h-7 text-[#FFDE42]" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
           </div>
-          <span className="text-[#FFDE42] font-heading text-xs tracking-widest uppercase font-bold">TAP TO PLAY</span>
-        </button>
+          <span className="text-[#4C5C2D] font-heading text-sm tracking-widest uppercase font-bold">NO SIGNAL</span>
+        </div>
       )}
 
-      {/* ── Bottom label bar ─────────────────────────────────────────────── */}
-      <div className="absolute bottom-0 left-0 right-0 flex justify-between items-center
-        px-2 py-1 bg-[#1B0C0C]/90 border-t-[2px] border-[#4C5C2D] z-10 gap-1">
-        <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
-          {isLive     && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />}
-          {qualityDot && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${qualityDot}`} />}
-          {isSpeaking && !muted && (
-            <span className="w-1.5 h-1.5 rounded-full bg-[#FFDE42] animate-pulse shrink-0" title="Speaking" />
-          )}
-          <span className="text-[#FFDE42] font-heading text-[10px] tracking-widest uppercase font-bold truncate leading-none">
-            {label}
-          </span>
+      {/* Label bar */}
+      <div className="absolute bottom-0 left-0 right-0 flex justify-between items-center px-3 py-1.5 bg-[#1B0C0C]/90 border-t-[2px] border-[#4C5C2D] z-10">
+        <div className="flex items-center gap-2 min-w-0">
+          {isLive && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />}
+          <span className="text-[#FFDE42] font-heading text-xs tracking-widest uppercase font-bold truncate">{label}</span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           {stream && interactive && pipAvailable && (
-            <button onClick={togglePip}
-              className="text-[#FFDE42] border border-[#4C5C2D] px-1.5 py-px text-[9px] font-heading font-bold uppercase hover:bg-[#FFDE42] hover:text-[#1B0C0C] transition-colors leading-none">
+            <button
+              onClick={togglePip}
+              title="Pop Out (Picture-in-Picture)"
+              className="text-[#FFDE42] border-[2px] border-[#4C5C2D] px-2 py-0.5 text-[10px] font-heading font-bold uppercase hover:bg-[#FFDE42] hover:text-[#1B0C0C] transition-colors"
+            >
               {isPip ? 'CLOSE' : 'POP'}
             </button>
           )}
-          <button onClick={toggleFullscreen}
-            className="text-[#FFDE42] border border-[#4C5C2D] px-1.5 py-px text-[9px] font-heading font-bold uppercase hover:bg-[#FFDE42] hover:text-[#1B0C0C] transition-colors leading-none">
+          <button
+            onClick={toggleFullscreen}
+            title="Fullscreen"
+            className="text-[#FFDE42] border-[2px] border-[#4C5C2D] px-2 py-0.5 text-[10px] font-heading font-bold uppercase hover:bg-[#FFDE42] hover:text-[#1B0C0C] transition-colors"
+          >
             {isFullscreen ? '✕' : '⛶'}
           </button>
         </div>
