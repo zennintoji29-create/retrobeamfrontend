@@ -154,10 +154,13 @@ export default function VideoMonitor({
     // Re-attach when the browser adds/removes tracks on the same stream object
     // (e.g. when replaceTrack changes the underlying track mid-session).
     const onAddTrack = (e: MediaStreamTrackEvent) => {
-      if (e.track.kind === 'video') {
-        e.track.addEventListener('unmute', () => refreshHasVideoTrack(stream));
-        e.track.addEventListener('ended', () => refreshHasVideoTrack(stream));
-        refreshHasVideoTrack(stream);
+      const kind = e.track.kind;
+      if (kind === 'video' || kind === 'audio') {
+        if (kind === 'video') {
+          e.track.addEventListener('unmute', () => refreshHasVideoTrack(stream));
+          e.track.addEventListener('ended', () => refreshHasVideoTrack(stream));
+          refreshHasVideoTrack(stream);
+        }
         // Force video element to pick up the new track
         const video = videoRef.current;
         if (video) {
@@ -180,6 +183,16 @@ export default function VideoMonitor({
     const onRemoveTrack = (e: MediaStreamTrackEvent) => {
       if (e.track.kind === 'video') {
         refreshHasVideoTrack(stream);
+      }
+      // Reload element to flush removed track regardless of kind
+      const video = videoRef.current;
+      if (video && video.srcObject === stream) {
+        if (playPromiseRef.current) return;
+        video.pause();
+        video.srcObject = null;
+        video.load();
+        video.srcObject = stream;
+        safePlay(video);
       }
     };
 

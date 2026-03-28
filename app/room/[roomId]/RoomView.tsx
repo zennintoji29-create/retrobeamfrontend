@@ -156,17 +156,13 @@ const SidePanel = ({
 export default function RoomView({
   room,
   isHost,
-  joinToken,
-  guestName,
 }: {
   room: any;
   isHost: boolean;
-  joinToken?: string;
-  guestName?: string;
 }) {
   const router = useRouter();
-  const { user, logout } = useAuth();
-  const { socket, isConnected } = useSocket(joinToken);
+  const { user, logout } = useAuth(true);
+  const { socket, isConnected } = useSocket();
 
   const {
     localStream, localScreenStream, remotePeers, participants,
@@ -174,7 +170,7 @@ export default function RoomView({
     toggleMic, toggleCamera, toggleScreenShare,
     viewerCount, leaveRoom,
     screenShareSupported,
-  } = useMeshWebRTC(room.roomId, socket, guestName);
+  } = useMeshWebRTC(room.roomId, socket);
 
   const [videoUrlInput, setVideoUrlInput] = useState('');
   const [syncedVideo, setSyncedVideo] = useState<{ url: string; isPlaying: boolean } | null>(null);

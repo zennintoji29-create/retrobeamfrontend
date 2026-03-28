@@ -8,7 +8,7 @@ import RoomView from './RoomView';
 
 export default function RoomPage() {
   const params = useParams() as { roomId: string };
-  const { user, loading } = useAuth();
+  const { user, loading } = useAuth(true);
   const router = useRouter();
   
   const [room, setRoom] = useState<any>(null);
@@ -49,15 +49,9 @@ export default function RoomPage() {
   }
 
   const isBroadcaster = user && room && user.id === room.hostId;
-  const joinToken = typeof window !== 'undefined' ? sessionStorage.getItem(`joinToken_${params.roomId}`) : null;
-  const guestName = (typeof window !== 'undefined' ? sessionStorage.getItem(`guestName_${params.roomId}`) : null) || undefined;
-  
-  if (!isBroadcaster && !joinToken && user?.id !== room.hostId) {
-    router.push('/join');
-    return null;
-  }
-
   const isHost = isBroadcaster || (user && room && user.id === room.hostId);
 
-  return <RoomView room={room} isHost={!!isHost} joinToken={joinToken || undefined} guestName={guestName} />;
+  if (!user && !loading) return null; // safety check handled by useAuth
+
+  return <RoomView room={room} isHost={!!isHost} />;
 }

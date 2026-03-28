@@ -88,19 +88,19 @@ function patchOpusSDP(sdp: string): string {
     patched = patched.replace(/useinbandfec=\d/, 'useinbandfec=1');
     patched = patched.replace(/usedtx=\d/, 'usedtx=1');
     patched = patched.replace(/stereo=\d/, 'stereo=0');
-    patched = patched.replace(/maxaveragebitrate=\d+/, 'maxaveragebitrate=40000');
+    patched = patched.replace(/maxaveragebitrate=\d+/, 'maxaveragebitrate=128000');
     const extras: string[] = [];
     if (!patched.includes('useinbandfec')) extras.push('useinbandfec=1');
     if (!patched.includes('usedtx')) extras.push('usedtx=1');
     if (!patched.includes('stereo')) extras.push('stereo=0');
-    if (!patched.includes('maxaveragebitrate')) extras.push('maxaveragebitrate=40000');
+    if (!patched.includes('maxaveragebitrate')) extras.push('maxaveragebitrate=128000');
     return `a=fmtp:${pt} ${patched}${extras.length ? ';' + extras.join(';') : ''}\r\n`;
   });
 
   if (!result.includes('b=AS:')) {
-    result = result.replace(/(m=audio [^\r\n]+\r\n(?:c=[^\r\n]+\r\n)?)/, '$1b=AS:40\r\n');
+    result = result.replace(/(m=audio [^\r\n]+\r\n(?:c=[^\r\n]+\r\n)?)/, '$1b=AS:128\r\n');
   } else {
-    result = result.replace(/b=AS:\d+(\r\n)/, 'b=AS:40$1');
+    result = result.replace(/b=AS:\d+(\r\n)/, 'b=AS:128$1');
   }
 
   return result;
@@ -168,7 +168,7 @@ type SenderRole = 'audio' | 'camera' | 'screen';
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN HOOK
 // ─────────────────────────────────────────────────────────────────────────────
-export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?: string) {
+export function useMeshWebRTC(roomId: string, socket: Socket | null) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const [remotePeers, setRemotePeers] = useState<RemotePeer[]>([]);
@@ -440,6 +440,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       senderRoles.current.set(peerId, roleMap);
 
       if (needsRenegotiation) {
+        (pc as any).__suppressNegotiation = true;
         try {
           const isStable = await waitForStableState(pc);
           if (!isStable) {
@@ -452,6 +453,8 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
           currentSocket.emit('peer:offer', { sdp: offer, roomId, targetSocketId: peerId });
         } catch (e) {
           console.error('Renegotiation failed for peer', peerId, e);
+        } finally {
+          (pc as any).__suppressNegotiation = false;
         }
       }
     }
@@ -483,10 +486,10 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
     // but we double-check here defensively.
     if (!socket.connected) {
       socket.once('connect', () => {
-        socket.emit('peer:join', { roomId, guestName });
+        socket.emit('peer:join', { roomId });
       });
     } else {
-      socket.emit('peer:join', { roomId, guestName });
+      socket.emit('peer:join', { roomId });
     }
 
     // Per-connection glare state stored in a WeakMap to avoid memory leaks
@@ -528,6 +531,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       // race. We set a flag on the pc to suppress it.
       (pc as any).__suppressNegotiation = false;
       pc.onnegotiationneeded = async () => {
+        if ((pc as any).__suppressNegotiation) return;
         // Only the offerer (the peer who initiated) drives renegotiation.
         // The impolite side should not spontaneously send offers — that causes glare.
         if (!isOfferer) return;
@@ -805,6 +809,13 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
     const handlePeerOffer = async ({
       sdp, peerId, username, isHost,
     }: { sdp: RTCSessionDescriptionInit; peerId: string; username?: string; isHost?: boolean }) => {
+      
+      // Ensure peer is represented in state even if they currently send no tracks
+      setRemotePeers(prev => {
+        if (prev.find(p => p.peerId === peerId)) return prev;
+        return [...prev, { peerId, username, isHost, streams: [null, null] }];
+      });
+
       let pc = peerConnections.current.get(peerId);
       if (!pc) pc = createPeerConnection(peerId, false);
 
@@ -936,7 +947,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       midRoles.current.clear();
       pendingCandidates.current.clear();
       setRemotePeers([]);
-      socket.emit('peer:join', { roomId, guestName });
+      socket.emit('peer:join', { roomId });
     };
 
     const handlePeerLeftEvent = ({ peerId }: { peerId: string }) => handlePeerLeft(peerId);
@@ -974,7 +985,7 @@ export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?:
       socket.emit('peer:leave', { roomId });
       leaveRoom();
     };
-  }, [socket, roomId, guestName, leaveRoom, handlePeerLeft, replaceTracksOnPeers, buildAudioPipeline]);
+  }, [socket, roomId, leaveRoom, handlePeerLeft, replaceTracksOnPeers, buildAudioPipeline]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // UPDATE LOCAL TRACKS
