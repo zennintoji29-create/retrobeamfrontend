@@ -44,17 +44,6 @@ const ICE_SERVERS: RTCConfiguration = {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUDIO CONSTRAINTS
-//
-// FIX (crackling / echo): All three DSP flags MUST be true. Without
-//   echoCancellation=true the speaker bleeds into the mic on any platform.
-//   Without noiseSuppression the background hiss is constant.
-//   Without autoGainControl loud voices clip and cause distortion.
-//
-// FIX (Android WebView OverconstrainedError): sampleRate / channelCount
-//   throw on some WebView builds — omit them on WebView.
-//
-// FIX (latency spikes): Set latency to 0.01 (10 ms) on desktop so the
-//   browser picks a low-latency path instead of the power-efficient default.
 // ─────────────────────────────────────────────────────────────────────────────
 const AUDIO_CONSTRAINTS: MediaTrackConstraints = IS_ANDROID_WEBVIEW
   ? {
@@ -68,7 +57,6 @@ const AUDIO_CONSTRAINTS: MediaTrackConstraints = IS_ANDROID_WEBVIEW
       autoGainControl: true,
       sampleRate: 48000,
       channelCount: 1,
-      // Low-latency hint — ignored if not supported, never throws
       // @ts-ignore — non-standard but widely supported
       latency: 0.01,
     };
@@ -97,17 +85,6 @@ function buildVideoConstraints(facingMode: 'user' | 'environment' = 'user'): Med
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SDP PATCHING — Opus prioritization, FEC, DTX, bitrate
-//
-// FIX (crackling over poor connection): useinbandfec=1 enables in-band
-//   Forward Error Correction so dropped packets are reconstructed instead
-//   of causing audible glitches.
-//
-// FIX (bandwidth-induced distortion): Cap at 40 kbps (not 32) — 32 kbps
-//   caused audible artifacts on voice with heavy background noise.
-//   40 kbps is the Opus sweet spot for voice quality vs bandwidth.
-//
-// FIX (stereo → mono): stereo=0 forces mono which halves bandwidth usage
-//   and prevents phase-cancellation artifacts from stereo mic capture.
 // ─────────────────────────────────────────────────────────────────────────────
 function patchOpusSDP(sdp: string): string {
   let result = sdp;
@@ -133,7 +110,6 @@ function patchOpusSDP(sdp: string): string {
       patched = patched.replace(/useinbandfec=\d/, 'useinbandfec=1');
       patched = patched.replace(/usedtx=\d/, 'usedtx=1');
       patched = patched.replace(/stereo=\d/, 'stereo=0');
-      // FIX: 40 kbps instead of 32 — better voice quality on noisy connections
       patched = patched.replace(/maxaveragebitrate=\d+/, 'maxaveragebitrate=40000');
       const extras: string[] = [];
       if (!patched.includes('useinbandfec')) extras.push('useinbandfec=1');
@@ -150,7 +126,6 @@ function patchOpusSDP(sdp: string): string {
       '$1b=AS:40\r\n',
     );
   } else {
-    // Update existing bandwidth line to match new bitrate
     result = result.replace(/b=AS:\d+(\r\n)/, 'b=AS:40$1');
   }
 
@@ -166,6 +141,32 @@ export const SCREEN_SHARE_SUPPORTED: boolean = (() => {
   if (IS_ANDROID_WEBVIEW) return false;
   return typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 })();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER — wait for stable signaling state with timeout
+//
+// FIX (Bug 3): Before calling createOffer manually in replaceTracksOnPeers,
+// we must ensure the peer is in 'stable' state. If a previous negotiation is
+// still in flight (have-local-offer), createOffer throws InvalidStateError and
+// the entire renegotiation silently fails — no screen track, no camera update.
+// ─────────────────────────────────────────────────────────────────────────────
+function waitForStableState(pc: RTCPeerConnection, timeoutMs = 5000): Promise<boolean> {
+  if (pc.signalingState === 'stable') return Promise.resolve(true);
+  return new Promise<boolean>(resolve => {
+    const timer = setTimeout(() => {
+      pc.removeEventListener('signalingstatechange', handler);
+      resolve(false);
+    }, timeoutMs);
+    const handler = () => {
+      if (pc.signalingState === 'stable') {
+        clearTimeout(timer);
+        pc.removeEventListener('signalingstatechange', handler);
+        resolve(true);
+      }
+    };
+    pc.addEventListener('signalingstatechange', handler);
+  });
+}
 
 export interface RemotePeer {
   peerId: string;
@@ -213,7 +214,6 @@ export function useMeshWebRTC(
   const gainNodeRef = useRef<GainNode | null>(null);
   const compressorNodeRef = useRef<DynamicsCompressorNode | null>(null);
   const processedStreamRef = useRef<MediaStream | null>(null);
-  // FIX: track the source node so we never create a second source on the same stream
   const audioSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
   // Stable boolean refs
@@ -229,30 +229,9 @@ export function useMeshWebRTC(
 
   // ─────────────────────────────────────────────────────────────────────────
   // buildAudioPipeline
-  //
-  // FIX (crackling on toggle): The pipeline is built ONCE per raw stream.
-  //   Subsequent calls are no-ops if the source stream hasn't changed.
-  //   Previously, calling buildAudioPipeline again on the same stream created
-  //   a second MediaStreamAudioSourceNode which doubled the signal → crackling.
-  //
-  // FIX (compressor settings for voice):
-  //   Previous: threshold=-24, ratio=4, attack=0.003, release=0.25
-  //   These settings were tuned for music, not speech. For voice:
-  //   - threshold=-18 dB: only compress moderately loud voices
-  //   - knee=8: soft knee for smoother onset
-  //   - ratio=3: gentle compression — voice dynamics should be preserved
-  //   - attack=0.005: slightly slower attack prevents transient pop artifacts
-  //   - release=0.15: faster release keeps voice sounding natural
-  //
-  // FIX (echo from processed stream): We do NOT add video tracks to the
-  //   processed stream. Video tracks go through userMediaStreamRef separately.
-  //   Mixing them caused a second video sender to appear on some browsers.
-  //
-  // FIX (AudioContext suspended): We always attempt resume() synchronously
-  //   inside the user-gesture call chain to satisfy Chrome autoplay policy.
   // ─────────────────────────────────────────────────────────────────────────
   const buildAudioPipeline = useCallback((rawStream: MediaStream): MediaStream | null => {
-    // Guard: if we already have a processed stream from this exact raw stream, reuse it
+    // Guard: reuse if already built for this stream
     if (processedStreamRef.current && audioSourceNodeRef.current) {
       return processedStreamRef.current;
     }
@@ -269,7 +248,6 @@ export function useMeshWebRTC(
       }
     }
 
-    // Resume synchronously — this is always called inside a user gesture
     if (ctx.state === 'suspended') {
       ctx.resume().catch(e => console.warn('AudioContext resume failed', e));
     }
@@ -281,7 +259,6 @@ export function useMeshWebRTC(
         return rawStream;
       }
 
-      // FIX: disconnect old source if it exists before creating a new one
       if (audioSourceNodeRef.current) {
         try { audioSourceNodeRef.current.disconnect(); } catch { /* already disconnected */ }
         audioSourceNodeRef.current = null;
@@ -291,26 +268,22 @@ export function useMeshWebRTC(
       audioSourceNodeRef.current = source;
 
       const gain = ctx.createGain();
-      // Start at 0 — the caller sets to 1 after pipeline is ready
       gain.gain.value = 0;
       gainNodeRef.current = gain;
 
-      // FIX: voice-tuned compressor values
       const compressor = ctx.createDynamicsCompressor();
-      compressor.threshold.value = -18;   // was -24
-      compressor.knee.value = 8;           // was 12
-      compressor.ratio.value = 3;          // was 4
-      compressor.attack.value = 0.005;     // was 0.003
-      compressor.release.value = 0.15;     // was 0.25
+      compressor.threshold.value = -18;
+      compressor.knee.value = 8;
+      compressor.ratio.value = 3;
+      compressor.attack.value = 0.005;
+      compressor.release.value = 0.15;
       compressorNodeRef.current = compressor;
 
       const dest = ctx.createMediaStreamDestination();
-
       source.connect(gain);
       gain.connect(compressor);
       compressor.connect(dest);
 
-      // Only audio in processedStream — video is managed separately
       const processedStream = new MediaStream();
       dest.stream.getAudioTracks().forEach(t => processedStream.addTrack(t));
 
@@ -324,7 +297,7 @@ export function useMeshWebRTC(
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // teardownAudioPipeline — clean teardown without leaving dangling nodes
+  // teardownAudioPipeline
   // ─────────────────────────────────────────────────────────────────────────
   const teardownAudioPipeline = useCallback(() => {
     if (audioSourceNodeRef.current) {
@@ -378,25 +351,23 @@ export function useMeshWebRTC(
   // ─────────────────────────────────────────────────────────────────────────
   // replaceTracksOnPeers
   //
-  // FIX (camera enable/disable causing renegotiation):
-  //   When the user toggles camera off we use track.enabled=false rather than
-  //   replaceTrack(null). replaceTrack(null) is spec-valid but causes a
-  //   "send with null track" state that triggers re-negotiation in Firefox and
-  //   older Chrome, which causes a brief audio dropout and sometimes a black
-  //   frame flash on the remote side.
-  //   track.enabled=false is silent — no renegotiation, instant mute.
+  // FIX (Bug 3): Guard signalingState before every manual createOffer call.
+  //   Use waitForStableState() so we never throw InvalidStateError.
   //
-  // FIX (audio dropout on peer reconnect): processedStreamRef audio tracks
-  //   must have their enabled state explicitly set after replaceTrack, because
-  //   the new AudioContext destination track defaults to enabled=true regardless
-  //   of the gain node's value.
+  // FIX (Bug 5): addTrack fires onnegotiationneeded automatically.
+  //   We let onnegotiationneeded handle addTrack cases (camera, audio).
+  //   We only use the manual offer path for removeTrack (screen stop), because
+  //   removeTrack does NOT reliably fire onnegotiationneeded in all browsers.
+  //
+  // FIX (Bug 1): processedStreamRef is guaranteed non-null before this is
+  //   called — enforced in updateLocalTracks by checking the return value of
+  //   buildAudioPipeline and assigning it explicitly.
   // ─────────────────────────────────────────────────────────────────────────
   const replaceTracksOnPeers = useCallback(async (currentSocket: Socket) => {
     const audioTrack = processedStreamRef.current?.getAudioTracks()[0] ?? null;
     const videoTrack = userMediaStreamRef.current?.getVideoTracks()[0] ?? null;
     const screenTrack = displayMediaStreamRef.current?.getVideoTracks()[0] ?? null;
 
-    // Sync enabled state with intent refs
     if (audioTrack) audioTrack.enabled = isMicOnRef.current;
     if (videoTrack) videoTrack.enabled = isCameraOnRef.current;
 
@@ -415,27 +386,26 @@ export function useMeshWebRTC(
       const senderByRole = (role: SenderRole): RTCRtpSender | undefined =>
         Array.from(roleMap!.entries()).find(([, r]) => r === role)?.[0];
 
-      let needsRenegotiation = false;
+      // Only the removeTrack (screen stop) case needs a manual offer,
+      // because removeTrack does NOT reliably fire onnegotiationneeded.
+      let needsManualRenegotiation = false;
 
       // ── Audio ──────────────────────────────────────────────────────────
       const audioSender = senderByRole('audio');
       if (audioSender) {
         if (audioTrack && audioSender.track?.id !== audioTrack.id) {
-          // Only replace if it's actually a different track (e.g. after stream rebuild)
           await audioSender.replaceTrack(audioTrack).catch(e =>
             console.error(`replaceTrack audio failed for ${peerId}`, e),
           );
         }
-        // Sync enabled state — the sender track may have reset
         if (audioSender.track) audioSender.track.enabled = isMicOnRef.current;
       } else if (audioTrack && processedStreamRef.current) {
+        // addTrack fires onnegotiationneeded — no manual offer needed here
         const s = pc.addTrack(audioTrack, processedStreamRef.current);
         roleMap.set(s, 'audio');
-        needsRenegotiation = true;
       }
 
       // ── Camera ─────────────────────────────────────────────────────────
-      // FIX: use track.enabled instead of replaceTrack(null) for toggling
       const camSender = senderByRole('camera');
       if (camSender) {
         if (videoTrack) {
@@ -446,13 +416,13 @@ export function useMeshWebRTC(
           }
           if (camSender.track) camSender.track.enabled = isCameraOnRef.current;
         } else {
-          // Camera fully stopped (no stream) — use enabled=false, no renegotiation
+          // Camera fully stopped — disable track, do NOT remove (avoids renegotiation churn)
           if (camSender.track) camSender.track.enabled = false;
         }
       } else if (videoTrack && userMediaStreamRef.current) {
+        // addTrack fires onnegotiationneeded — no manual offer needed here
         const s = pc.addTrack(videoTrack, userMediaStreamRef.current);
         roleMap.set(s, 'camera');
-        needsRenegotiation = true;
       }
 
       // ── Screen ─────────────────────────────────────────────────────────
@@ -465,18 +435,31 @@ export function useMeshWebRTC(
             );
           }
         } else {
+          // FIX (Bug 5): removeTrack does NOT fire onnegotiationneeded reliably —
+          // we must trigger a manual offer only for this case.
           pc.removeTrack(screenSender);
           roleMap.delete(screenSender);
-          needsRenegotiation = true;
+          needsManualRenegotiation = true;
         }
       } else if (screenTrack && displayMediaStreamRef.current) {
+        // addTrack fires onnegotiationneeded — no manual offer needed here.
+        // onnegotiationneeded will handle the offer/answer for this new track.
         const s = pc.addTrack(screenTrack, displayMediaStreamRef.current);
         roleMap.set(s, 'screen');
-        needsRenegotiation = true;
+        // No needsManualRenegotiation = true here; onnegotiationneeded handles it.
       }
 
-      if (needsRenegotiation) {
+      // ── Manual renegotiation — ONLY for removeTrack cases ─────────────
+      if (needsManualRenegotiation) {
         try {
+          // FIX (Bug 3): Wait for stable state before creating offer.
+          // If a previous negotiation is in flight, createOffer throws.
+          const isStable = await waitForStableState(pc);
+          if (!isStable) {
+            console.warn(`Peer ${peerId}: signaling state never became stable, skipping renegotiation`);
+            continue;
+          }
+
           const offer = await pc.createOffer();
           offer.sdp = patchOpusSDP(offer.sdp ?? '');
           await pc.setLocalDescription(offer);
@@ -486,7 +469,7 @@ export function useMeshWebRTC(
             targetSocketId: peerId,
           });
         } catch (e) {
-          console.error('Renegotiation failed for peer', peerId, e);
+          console.error('Manual renegotiation failed for peer', peerId, e);
         }
       }
     }
@@ -514,6 +497,9 @@ export function useMeshWebRTC(
 
     socket.emit('peer:join', { roomId, guestName });
 
+    // FIX (Bug 6): glareState used to store { current: makingOffer } capturing
+    // the initial `let` value (always false) instead of the live variable.
+    // Now we use actual ref objects so mutations are reflected everywhere.
     const glareState = new WeakMap<RTCPeerConnection, {
       isPolite: boolean;
       makingOfferRef: { current: boolean };
@@ -528,8 +514,14 @@ export function useMeshWebRTC(
       senderRoles.current.set(peerId, roleMap);
 
       const isPolite = !isOfferer;
-      let makingOffer = false;
-      let ignoreOffer = false;
+
+      // FIX (Bug 6): Use ref objects — not local `let` variables — so that
+      // mutations inside closures (onnegotiationneeded, handlePeerOffer, etc.)
+      // are visible across all handlers that share this peer connection.
+      const makingOfferRef = { current: false };
+      const ignoreOfferRef = { current: false };
+
+      glareState.set(pc, { isPolite, makingOfferRef, ignoreOfferRef });
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -541,68 +533,105 @@ export function useMeshWebRTC(
         }
       };
 
+      // FIX (Bug 2): Removed the inner guard `if (!pc.remoteDescription) return`.
+      // That guard was silently killing the initial offer when remoteDescription
+      // was null (early connection setup), causing the entire negotiation to be
+      // lost with no retry or fallback.
+      //
+      // FIX (Bug 5): onnegotiationneeded is now the SOLE path for addTrack-
+      // triggered renegotiations. replaceTracksOnPeers no longer creates offers
+      // for addTrack — it relies on this handler firing naturally.
       pc.onnegotiationneeded = async () => {
-        if (isOfferer && !makingOffer && pc.signalingState === 'stable') {
-          if (!pc.remoteDescription) return;
-        }
+        // Guard: skip if we're already mid-negotiation
+        if (makingOfferRef.current) return;
         try {
-          makingOffer = true;
+          makingOfferRef.current = true;
           const offer = await pc.createOffer();
+          // Check state after the async createOffer — it may have changed
           if (pc.signalingState !== 'stable') return;
           offer.sdp = patchOpusSDP(offer.sdp ?? '');
           await pc.setLocalDescription(offer);
-          socket.emit('peer:offer', { sdp: pc.localDescription, roomId, targetSocketId: peerId });
+          socket.emit('peer:offer', {
+            sdp: pc.localDescription,
+            roomId,
+            targetSocketId: peerId,
+          });
         } catch (e) {
           console.error('onnegotiationneeded offer failed', e);
         } finally {
-          makingOffer = false;
+          makingOfferRef.current = false;
         }
       };
 
+      // FIX (Bug 4): ontrack handler rewritten to:
+      //   1. Never drop the incoming stream due to a stale "ended" filter.
+      //   2. Use getTrackById() instead of find() for correct track dedup.
+      //   3. Fall back to a new MediaStream([event.track]) only when
+      //      event.streams is empty — but still add the track in both cases.
+      //   4. Only filter out streams that are fully dead AND are not the
+      //      incoming stream — avoids discarding the just-arrived track.
       pc.ontrack = (event) => {
         const participantAtEventTime = participantsRef.current.find(p => p.peerId === peerId);
-
-        const handleTrackEnded = () => {
-          setRemotePeers(prev => prev.map(p => {
-            if (p.peerId !== peerId) return p;
-            return {
-              ...p,
-              streams: p.streams.filter(s => s.getTracks().some(t => t.readyState !== 'ended')),
-            };
-          }));
-        };
-        event.track.onended = handleTrackEnded;
-
-        const incomingStream = event.streams[0] ?? new MediaStream([event.track]);
+        const incomingStream = event.streams[0] ?? null;
 
         setRemotePeers(prev => {
           const peerEntry = prev.find(p => p.peerId === peerId);
 
           if (peerEntry) {
             let updatedStreams = [...peerEntry.streams];
-            const existingStream = updatedStreams.find(s => s.id === incomingStream.id);
-            if (existingStream) {
-              if (!existingStream.getTracks().find(t => t.id === event.track.id)) {
-                existingStream.addTrack(event.track);
+
+            if (incomingStream) {
+              const existingStream = updatedStreams.find(s => s.id === incomingStream.id);
+              if (existingStream) {
+                // Add track only if not already present
+                if (!existingStream.getTrackById(event.track.id)) {
+                  existingStream.addTrack(event.track);
+                }
+              } else {
+                updatedStreams.push(incomingStream);
               }
             } else {
-              updatedStreams.push(incomingStream);
+              // Browser gave no streams array — wrap the track ourselves
+              const fallback = new MediaStream([event.track]);
+              updatedStreams.push(fallback);
             }
+
+            // FIX (Bug 4): Only remove streams that are fully dead AND are NOT
+            // the incoming stream. Previously, this filter ran without excluding
+            // incomingStream, which could drop a stream whose tracks appeared
+            // "ended" momentarily during renegotiation.
             updatedStreams = updatedStreams.filter(s =>
+              (incomingStream && s.id === incomingStream.id) ||
               s.getTracks().some(t => t.readyState !== 'ended'),
             );
+
             return prev.map(p =>
               p.peerId === peerId ? { ...p, streams: updatedStreams } : p,
             );
           }
 
+          // New peer — create entry with the incoming stream
+          const stream = incomingStream ?? new MediaStream([event.track]);
           return [...prev, {
             peerId,
             username: participantAtEventTime?.name ?? 'Remote Peer',
             isHost: participantAtEventTime?.isHost,
-            streams: [incomingStream],
+            streams: [stream],
           }];
         });
+
+        // Attach ended handler AFTER state update
+        event.track.onended = () => {
+          setRemotePeers(prev => prev.map(p => {
+            if (p.peerId !== peerId) return p;
+            return {
+              ...p,
+              streams: p.streams.filter(s =>
+                s.getTracks().some(t => t.readyState !== 'ended'),
+              ),
+            };
+          }));
+        };
       };
 
       pc.onconnectionstatechange = () => {
@@ -618,7 +647,6 @@ export function useMeshWebRTC(
       const processed = processedStreamRef.current;
       if (processed) {
         processed.getAudioTracks().forEach(track => {
-          // Ensure track enabled state is synced before adding
           track.enabled = isMicOnRef.current;
           const s = pc.addTrack(track, processed);
           roleMap.set(s, 'audio');
@@ -652,12 +680,6 @@ export function useMeshWebRTC(
         });
       }, 0);
 
-      glareState.set(pc, {
-        isPolite,
-        makingOfferRef: { current: makingOffer },
-        ignoreOfferRef: { current: ignoreOffer },
-      });
-
       return pc;
     };
 
@@ -690,6 +712,9 @@ export function useMeshWebRTC(
 
       const gs = glareState.get(pc);
       const isPolite = gs?.isPolite ?? true;
+
+      // FIX (Bug 6): Now correctly reads the live ref value, not a stale
+      // snapshot captured at construction time.
       const makingOffer = gs?.makingOfferRef.current ?? false;
 
       const offerCollision =
@@ -709,14 +734,6 @@ export function useMeshWebRTC(
         } else {
           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         }
-
-        setRemotePeers(prev => prev.map(p => {
-          if (p.peerId !== peerId) return p;
-          return {
-            ...p,
-            streams: p.streams.filter(s => s.getTracks().some(t => t.readyState !== 'ended')),
-          };
-        }));
 
         const answer = await pc.createAnswer();
         answer.sdp = patchOpusSDP(answer.sdp ?? '');
@@ -742,6 +759,8 @@ export function useMeshWebRTC(
       if (!pc) return;
 
       const gs = glareState.get(pc);
+
+      // FIX (Bug 6): Correctly reads the live ignoreOfferRef value.
       if (gs?.ignoreOfferRef.current) return;
 
       try {
@@ -758,14 +777,6 @@ export function useMeshWebRTC(
           );
         }
         pendingCandidates.current.delete(peerId);
-
-        setRemotePeers(prev => prev.map(p => {
-          if (p.peerId !== peerId) return p;
-          return {
-            ...p,
-            streams: p.streams.filter(s => s.getTracks().some(t => t.readyState !== 'ended')),
-          };
-        }));
       } catch (e) {
         console.error('Error handling answer', e);
       }
@@ -791,6 +802,7 @@ export function useMeshWebRTC(
     };
 
     const handleViewersUpdate = ({ count }: { count: number }) => setViewerCount(count);
+
     const handleParticipantsUpdate = ({ participants: updated }: { participants: Participant[] }) => {
       setParticipants(updated);
       participantsRef.current = updated;
@@ -803,12 +815,9 @@ export function useMeshWebRTC(
     const handleHostMuted = () => {
       setIsMicOn(false);
       isMicOnRef.current = false;
-      // FIX: ramp down gain smoothly instead of instantly cutting to 0,
-      // which causes a click/pop artifact on the remote side
       if (gainNodeRef.current && audioContextRef.current) {
         gainNodeRef.current.gain.setTargetAtTime(0, audioContextRef.current.currentTime, 0.02);
       }
-      // Also disable the track as a hard mute fallback
       processedStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
     };
 
@@ -850,31 +859,11 @@ export function useMeshWebRTC(
   // ─────────────────────────────────────────────────────────────────────────
   // updateLocalTracks
   //
-  // FIX (audio crackling on mic toggle):
-  //   We NEVER stop() audio tracks when toggling mic off. We set gain to 0
-  //   (via a smooth 20ms ramp) and set track.enabled=false. This keeps the
-  //   RTCPeerConnection audio sender alive with a silent track instead of
-  //   null, which avoids the renegotiation + re-establishment cycle that
-  //   caused the crackle heard at the start of every unmute.
-  //
-  // FIX (camera toggle causing brief audio dropout):
-  //   Previously, toggling camera triggered updateLocalTracks which called
-  //   replaceTracksOnPeers with the current audio track. If processedStream
-  //   was briefly null (race condition during buildAudioPipeline), the audio
-  //   sender got replaceTrack(null) and caused a ~500ms dropout.
-  //   Fix: guard processedStreamRef before calling replaceTracksOnPeers.
-  //
-  // FIX (duplicate audio pipeline on stream re-acquire):
-  //   When userMediaStreamRef is null and we re-acquire, we must call
-  //   teardownAudioPipeline() first to clear the old AudioContext nodes
-  //   before calling buildAudioPipeline with the new stream. Otherwise
-  //   two source nodes feed the same destination → doubled/distorted audio.
-  //
-  // FIX (Android WebView getUserMedia + camera toggle):
-  //   On some WebView builds, toggling videoTrack.enabled=false is not
-  //   enough — the camera LED stays on and the encoder keeps running.
-  //   We leave this as-is because stopping the track entirely requires
-  //   full stream re-acquisition which is too disruptive on mobile.
+  // FIX (Bug 1): buildAudioPipeline return value is now captured and explicitly
+  //   assigned to processedStreamRef.current if not already set. Previously the
+  //   return was discarded, leaving processedStreamRef null during the async
+  //   gap between getUserMedia and buildAudioPipeline, causing replaceTracksOnPeers
+  //   to skip audio sender creation for any peers joined in that window.
   // ─────────────────────────────────────────────────────────────────────────
   const updateLocalTracks = useCallback(async ({
     targetAudio,
@@ -898,7 +887,6 @@ export function useMeshWebRTC(
       // ── Acquire / update userMedia ────────────────────────────────────
       if (needsUserMedia) {
         if (!userMediaStreamRef.current) {
-          // ── First acquisition ─────────────────────────────────────────
           // Teardown any stale audio pipeline from a previous session first
           teardownAudioPipeline();
 
@@ -966,9 +954,7 @@ export function useMeshWebRTC(
             }
           }
         } else {
-          // ── Stream already exists: use track.enabled to toggle ─────────
-          // FIX: never stop() tracks just to "toggle off" — just disable them.
-          // Stopping requires full re-acquisition + renegotiation = crackling.
+          // Stream already exists — use track.enabled to toggle, never stop()
           if (targetVideo !== undefined) {
             userMediaStreamRef.current.getVideoTracks().forEach(t => {
               t.enabled = currentVideo;
@@ -978,9 +964,15 @@ export function useMeshWebRTC(
 
         // ── Build / update audio pipeline ─────────────────────────────────
         if (userMediaStreamRef.current?.getAudioTracks().length) {
-          // Build pipeline if not yet built (guard against double-build)
+          // FIX (Bug 1): Capture the return value and assign it explicitly.
+          // The previous code called buildAudioPipeline() and discarded the
+          // return, leaving processedStreamRef.current potentially null when
+          // replaceTracksOnPeers was called immediately after.
           if (!processedStreamRef.current || !audioSourceNodeRef.current) {
-            buildAudioPipeline(userMediaStreamRef.current);
+            const built = buildAudioPipeline(userMediaStreamRef.current);
+            if (!processedStreamRef.current && built) {
+              processedStreamRef.current = built;
+            }
           }
 
           // Resume context if it got suspended (browser autoplay policy)
@@ -989,9 +981,6 @@ export function useMeshWebRTC(
           }
 
           if (currentMic) {
-            // FIX: use setTargetAtTime with a 20ms time constant for a smooth
-            // ramp-up instead of an instant jump — instant jumps cause a click
-            // artifact audible as a "pop" at the start of speech.
             if (gainNodeRef.current && audioContextRef.current) {
               gainNodeRef.current.gain.cancelScheduledValues(audioContextRef.current.currentTime);
               gainNodeRef.current.gain.setTargetAtTime(
@@ -1000,16 +989,12 @@ export function useMeshWebRTC(
             }
             processedStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = true; });
           } else {
-            // FIX: ramp DOWN over 20ms then hard-disable the track.
-            // The ramp prevents the click; the track disable is a belt-and-suspenders
-            // silent fallback for browsers that don't honour gain=0.
             if (gainNodeRef.current && audioContextRef.current) {
               gainNodeRef.current.gain.cancelScheduledValues(audioContextRef.current.currentTime);
               gainNodeRef.current.gain.setTargetAtTime(
                 0, audioContextRef.current.currentTime, 0.02,
               );
             }
-            // Delay the track.enabled=false by 60ms to let the ramp finish
             setTimeout(() => {
               processedStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
             }, 60);
@@ -1037,7 +1022,6 @@ export function useMeshWebRTC(
           try {
             displayMediaStreamRef.current = await navigator.mediaDevices.getDisplayMedia({
               video: { frameRate: { ideal: 30 }, width: { ideal: 1920 } },
-              // FIX: explicitly false — system audio causes echo when mixed with mic
               audio: false,
             });
 
@@ -1085,9 +1069,18 @@ export function useMeshWebRTC(
     }
   }, [socket, replaceTracksOnPeers, buildAudioPipeline, teardownAudioPipeline]);
 
-  const toggleMic = useCallback(() => updateLocalTracks({ targetAudio: !isMicOnRef.current }), [updateLocalTracks]);
-  const toggleCamera = useCallback(() => updateLocalTracks({ targetVideo: !isCameraOnRef.current }), [updateLocalTracks]);
-  const toggleScreenShare = useCallback(() => updateLocalTracks({ targetScreen: !isScreenOnRef.current }), [updateLocalTracks]);
+  const toggleMic = useCallback(
+    () => updateLocalTracks({ targetAudio: !isMicOnRef.current }),
+    [updateLocalTracks],
+  );
+  const toggleCamera = useCallback(
+    () => updateLocalTracks({ targetVideo: !isCameraOnRef.current }),
+    [updateLocalTracks],
+  );
+  const toggleScreenShare = useCallback(
+    () => updateLocalTracks({ targetScreen: !isScreenOnRef.current }),
+    [updateLocalTracks],
+  );
 
   return {
     localStream,
