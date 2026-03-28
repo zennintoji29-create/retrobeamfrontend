@@ -1,41 +1,55 @@
-import { useEffect, useState, useRef } from 'react';
-import { Socket } from 'socket.io-client';
-import { getSocket } from '../lib/socket';
+import { io, Socket } from 'socket.io-client';
 
-export function useSocket(token?: string) {
-  const [isConnected, setIsConnected] = useState(false);
+// ─────────────────────────────────────────────────────────────────────────────
+// SINGLETON SOCKET
+//
+// FIX (Bug 7 — token race): The original code set socket.auth AFTER the
+// socket object was created and potentially already connected (on re-calls
+// with a reused instance). For guest users the token arrived AFTER the
+// first connect attempt, meaning the server received an unauthenticated
+// handshake, rejected it or gave a different socket.id, and then the
+// WebRTC peer:join was emitted with the wrong/missing identity.
+//
+// Fix: Accept token at creation time and embed it in the io() options so
+// it is included in the very first handshake. On subsequent calls where
+// the socket already exists, update auth and re-auth via socket.auth —
+// this is safe because the socket is not yet connected when getSocket()
+// is first called (autoConnect: false).
+//
+// FIX (Bug 8 — stale singleton after disconnect): disconnectSocket() sets
+// socket = null. If getSocket() is called again afterwards (e.g. re-joining
+// a room) a fresh socket is created correctly with the new token.
+// ─────────────────────────────────────────────────────────────────────────────
+let socket: Socket | null = null;
 
-  // FIX — store socket in state, not just a ref.
-  // Using only a ref means socketRef.current is always null on the
-  // first render (the ref is populated inside useEffect, which runs
-  // AFTER the component renders). Any consumer that destructures
-  // `socket` from this hook gets null and never re-renders when the
-  // socket connects. Storing it in state ensures consumers re-render
-  // the moment the socket is ready.
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const socketRef = useRef<Socket | null>(null);
+export const getSocket = (token?: string): Socket => {
+  if (!socket) {
+    // FIX (Bug 7): Pass auth in the io() constructor so it is part of the
+    // initial HTTP handshake, not set after the fact.
+    socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000', {
+      withCredentials: true,
+      autoConnect: false,
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
+      // FIX: auth goes here — in the constructor — not set separately later
+      auth: token ? { token } : {},
+      transports: ['websocket', 'polling'],
+    });
+  } else if (token && socket.auth) {
+    // Socket already exists — update auth for future reconnections.
+    // This is safe: socket.auth is read on every (re)connect attempt.
+    (socket.auth as Record<string, string>).token = token;
+  }
 
-  useEffect(() => {
-    const s = getSocket(token);
-    socketRef.current = s;
-    setSocket(s); // triggers re-render so consumers get the real socket
+  return socket;
+};
 
-    const onConnect    = () => setIsConnected(true);
-    const onDisconnect = () => setIsConnected(false);
-
-    s.on('connect', onConnect);
-    s.on('disconnect', onDisconnect);
-
-    // Connect only if not already connected (getSocket may reuse an existing socket)
-    if (!s.connected) s.connect();
-
-    return () => {
-      s.off('connect', onConnect);
-      s.off('disconnect', onDisconnect);
-      // Do NOT disconnect here — the socket is shared across the app via getSocket().
-      // Disconnecting on unmount would kill it for other consumers too.
-    };
-  }, [token]);
-
-  return { socket, isConnected };
-}
+export const disconnectSocket = () => {
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
+};
