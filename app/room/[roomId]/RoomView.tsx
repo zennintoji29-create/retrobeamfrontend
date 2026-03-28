@@ -181,7 +181,6 @@ export default function RoomView({
   const [reactions, setReactions] = useState<{ id: number; emoji: string; left: number }[]>([]);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [isHandRaised, setIsHandRaised] = useState(false);
-  // FIX: use Array.from() instead of spread to avoid --downlevelIteration TS error
   const [raisedHands, setRaisedHands] = useState<Set<string>>(new Set());
   const [showMobilePanel, setShowMobilePanel] = useState(false);
 
@@ -199,8 +198,6 @@ export default function RoomView({
       setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 4000);
     });
 
-    // FIX: use Array.from() instead of [...Set] spread — avoids TS2802 error
-    // without needing --downlevelIteration compiler flag
     socket.on('peer:hand_raised', ({ peerId }: { peerId: string }) => {
       setRaisedHands(prev => new Set(Array.from(prev).concat(peerId)));
     });
@@ -269,6 +266,13 @@ export default function RoomView({
   };
 
   // ── Build tile list ───────────────────────────────────────────────────────
+  //
+  // FIX: remotePeers.streams is now a fixed-length-2 tuple
+  //   [0] = camera/audio stream (MediaStream | null)
+  //   [1] = screen stream       (MediaStream | null)
+  //
+  // We only render a tile when the slot is non-null, avoiding blank ghost
+  // tiles when a peer hasn't started their camera or screen yet.
   const allTiles = [
     ...(pinnedId !== 'local' ? [{
       id: 'local',
@@ -296,10 +300,9 @@ export default function RoomView({
     }] : []),
 
     ...remotePeers.flatMap(peer => {
-      const camStream = peer.streams[0] ?? null;
-      const screenStreams = peer.streams.slice(1);
       const tiles: any[] = [];
 
+      // Slot 0 — camera (always render even if null so peer is visible in grid)
       const camId = `${peer.peerId}-0`;
       if (camId !== pinnedId) {
         tiles.push({
@@ -309,35 +312,40 @@ export default function RoomView({
           raised: raisedHands.has(peer.peerId),
           element: (
             <VideoMonitor
-              stream={camStream}
+              // FIX: Pass null stream when slot is empty — VideoMonitor shows
+              // "NO SIGNAL" which is correct when the peer hasn't started cam.
+              stream={peer.streams[0]}
               muted={false}
               label={peer.username || `PEER_${peer.peerId.slice(0, 4)}`}
-              isLive={true}
+              isLive={!!peer.streams[0]}
               interactive={false}
             />
           ),
         });
       }
 
-      screenStreams.forEach((stream, i) => {
-        const id = `${peer.peerId}-${i + 1}`;
-        if (id === pinnedId) return;
-        tiles.push({
-          id,
-          peerId: peer.peerId,
-          labelIdx: i + 1,
-          raised: false,
-          element: (
-            <VideoMonitor
-              stream={stream}
-              muted={false}
-              label={`${peer.username || `PEER_${peer.peerId.slice(0, 4)}`} (SCR)`}
-              isLive={true}
-              interactive={false}
-            />
-          ),
-        });
-      });
+      // Slot 1 — screen share (only render tile when non-null)
+      const screenStream = peer.streams[1];
+      if (screenStream) {
+        const screenId = `${peer.peerId}-1`;
+        if (screenId !== pinnedId) {
+          tiles.push({
+            id: screenId,
+            peerId: peer.peerId,
+            labelIdx: 1,
+            raised: false,
+            element: (
+              <VideoMonitor
+                stream={screenStream}
+                muted={false}
+                label={`${peer.username || `PEER_${peer.peerId.slice(0, 4)}`} (SCR)`}
+                isLive={true}
+                interactive={false}
+              />
+            ),
+          });
+        }
+      }
 
       return tiles;
     }),
@@ -349,12 +357,26 @@ export default function RoomView({
     : allTiles.length <= 4 ? 'grid-cols-2 sm:grid-cols-2'
     : 'grid-cols-2 sm:grid-cols-2 lg:grid-cols-3';
 
-  // ── Control dock height for scroll padding ───────────────────────────────
-  // FIX (mobile layout): The control dock is position:fixed on mobile so it
-  // overlaps the video grid. We add pb that matches the dock height so the
-  // last tile is never hidden behind the dock.
-  // Desktop dock height ≈ 72px, mobile ≈ 80px. Use CSS env(safe-area-inset-bottom)
-  // for notched iPhones.
+  // Pinned stream resolver — uses the fixed tuple indices
+  const resolvePinnedStream = () => {
+    if (!pinnedId) return null;
+    if (pinnedId === 'local') {
+      return <VideoMonitor stream={localStream} muted={true} label={isHost ? 'YOU (HOST)' : 'YOU'} isLive={true} cameraEnabled={isCameraOn} />;
+    }
+    if (pinnedId === 'local-screen' && localScreenStream) {
+      return <VideoMonitor stream={localScreenStream} muted={true} label="YOUR SCREEN" isLive={true} />;
+    }
+    // Remote peer slot — format: `${peerId}-${slotIndex}`
+    const lastDash = pinnedId.lastIndexOf('-');
+    const pId = pinnedId.slice(0, lastDash);
+    const sIdx = parseInt(pinnedId.slice(lastDash + 1), 10);
+    const peer = remotePeers.find(p => p.peerId === pId);
+    // sIdx is guaranteed to be 0 or 1 given how we build tile ids
+    const stream = peer?.streams[sIdx as 0 | 1] ?? null;
+    return stream
+      ? <VideoMonitor stream={stream} muted={false} label={`PEER_${pId.slice(0, 4)}${sIdx > 0 ? ' (SCR)' : ''}`} isLive={true} interactive={false} />
+      : null;
+  };
 
   return (
     <div
@@ -404,7 +426,6 @@ export default function RoomView({
           <div className="flex items-center gap-1.5 bg-[#313E17] border-[3px] border-[#1B0C0C] shadow-[3px_3px_0_#4C5C2D] px-3 py-1">
             <span className="text-[#FFDE42] font-heading font-bold text-xs sm:text-sm">👤 {remotePeers.length + 1}</span>
           </div>
-          {/* FIX (mobile): panel toggle always visible on non-desktop */}
           <button
             onClick={() => setShowMobilePanel(v => !v)}
             className="lg:hidden bg-[#313E17] border-[3px] border-[#1B0C0C] shadow-[3px_3px_0_#4C5C2D] w-9 h-9 flex items-center justify-center text-[#FFDE42] font-heading font-black text-lg hover:bg-[#4C5C2D] transition-colors"
@@ -426,17 +447,10 @@ export default function RoomView({
 
         {/* Video area */}
         <div className="flex-1 flex flex-col overflow-hidden relative" style={{ minHeight: 0 }}>
-          {/*
-            FIX (mobile: video grid hidden behind dock):
-            padding-bottom accounts for the fixed control dock height.
-            On mobile the dock is ~80px, add safe-area inset for notched phones.
-            On desktop the dock is inline (not fixed) so pb-0 at lg+.
-          */}
           <div
             className="flex-1 overflow-y-auto overflow-x-hidden p-2 sm:p-3"
             style={{
               minHeight: 0,
-              // FIX: dynamic bottom padding so dock never covers last tile
               paddingBottom: 'calc(88px + env(safe-area-inset-bottom, 0px))',
             }}
           >
@@ -451,22 +465,7 @@ export default function RoomView({
                   📌 PINNED
                 </div>
                 <div className="absolute inset-0">
-                  {pinnedId === 'local' ? (
-                    <VideoMonitor stream={localStream} muted={true} label={isHost ? 'YOU (HOST)' : 'YOU'} isLive={true} cameraEnabled={isCameraOn} />
-                  ) : pinnedId === 'local-screen' && localScreenStream ? (
-                    <VideoMonitor stream={localScreenStream} muted={true} label="YOUR SCREEN" isLive={true} />
-                  ) : (
-                    (() => {
-                      const parts = pinnedId.split('-');
-                      const pId = parts[0];
-                      const sIdx = parseInt(parts[1]) || 0;
-                      const peer = remotePeers.find(p => p.peerId === pId);
-                      const stream = peer?.streams[sIdx];
-                      return stream
-                        ? <VideoMonitor stream={stream} muted={false} label={`PEER_${pId.slice(0, 4)}${sIdx > 0 ? ' (SCR)' : ''}`} isLive={true} interactive={false} />
-                        : null;
-                    })()
-                  )}
+                  {resolvePinnedStream()}
                 </div>
                 <button
                   onClick={() => setPinnedId(null)}
@@ -535,15 +534,7 @@ export default function RoomView({
             </div>
           </div>
 
-          {/* ── Control dock ─────────────────────────────────────────────── */}
-          {/*
-            FIX (mobile layout):
-            - Use fixed positioning on mobile so the dock always sits at the
-              bottom of the viewport, even when the video grid scrolls.
-            - On desktop (lg+) switch to sticky/relative inside the flex column
-              so the sidebar layout still works correctly.
-            - Add safe-area-inset-bottom padding for notched iPhones (iOS).
-          */}
+          {/* ── Control dock ──────────────────────────────────────────────── */}
           <div
             className="fixed bottom-0 left-0 right-0 lg:relative lg:bottom-auto z-30 bg-[#313E17] border-t-[4px] border-[#1B0C0C] shadow-[0_-4px_0_#4C5C2D]"
             style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
@@ -574,7 +565,7 @@ export default function RoomView({
                   <span className="hidden sm:block text-[9px] tracking-widest">{isCameraOn ? 'CAM ON' : 'CAM OFF'}</span>
                 </button>
 
-                {/* SCREEN — hidden on unsupported platforms */}
+                {/* SCREEN */}
                 {screenShareSupported && (
                   <button
                     onClick={toggleScreenShare}
@@ -594,7 +585,7 @@ export default function RoomView({
                   <span className="hidden sm:block text-[9px] tracking-widest">HAND</span>
                 </button>
 
-                {/* Quick reactions — hidden on very small screens to save space */}
+                {/* Quick reactions */}
                 <div className="hidden sm:flex gap-1">
                   {['👍', '🔥', '😂'].map(e => (
                     <button
@@ -637,7 +628,6 @@ export default function RoomView({
             <div className="absolute inset-0 bg-black/60" />
             <div
               className="relative z-50 bg-[#1B0C0C] border-t-[4px] border-[#4C5C2D] shadow-[0_-8px_0_#313E17] flex flex-col"
-              // FIX (mobile panel height): leave room for the control dock below
               style={{
                 maxHeight: 'calc(70vh - env(safe-area-inset-bottom, 0px))',
                 paddingBottom: 'env(safe-area-inset-bottom, 0px)',
@@ -676,14 +666,9 @@ export default function RoomView({
             100% { transform: translateY(-80vh); opacity: 0; }
           }
           .animate-fly-up { animation: fly-up 4s ease-out forwards; }
-
-          /* FIX: custom scrollbar — thin on mobile to save space */
           .custom-scrollbar::-webkit-scrollbar { width: 4px; }
           .custom-scrollbar::-webkit-scrollbar-track { background: #1B0C0C; }
           .custom-scrollbar::-webkit-scrollbar-thumb { background: #4C5C2D; }
-
-          /* FIX (iOS Safari): prevent bounce scroll on the root that
-             causes the fixed control dock to drift up */
           html, body { overscroll-behavior: none; }
         `,
       }} />

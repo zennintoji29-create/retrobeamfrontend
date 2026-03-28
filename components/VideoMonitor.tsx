@@ -26,10 +26,16 @@ export default function VideoMonitor({
   const [needsTap, setNeedsTap] = useState(false);
   const [hasVideoTrack, setHasVideoTrack] = useState(false);
 
+  // Guard against overlapping play() calls
   const playPromiseRef = useRef<Promise<void> | null>(null);
+  // Track the stream id we last attached so we can avoid redundant re-attaches
+  const attachedStreamIdRef = useRef<string | null>(null);
 
-  // 🔥 CRITICAL FIX: Safe play with proper readyState guard
+  // ─────────────────────────────────────────────────────────────────────────
+  // SAFE PLAY
+  // ─────────────────────────────────────────────────────────────────────────
   const safePlay = useCallback((video: HTMLVideoElement) => {
+    // Bail if a play() is already in flight
     if (playPromiseRef.current) return;
 
     const doPlay = () => {
@@ -41,11 +47,12 @@ export default function VideoMonitor({
         .catch((e: DOMException) => {
           playPromiseRef.current = null;
           if (e.name === 'NotAllowedError') {
+            // Browser requires a user gesture — show tap-to-play overlay
             setNeedsTap(true);
           } else if (e.name === 'AbortError') {
-            // Benign
+            // Benign — another load() interrupted this play(), will retry
           } else {
-            console.warn('Video play() failed:', e.name, e.message);
+            console.warn('video.play() failed:', e.name, e.message);
           }
         });
     };
@@ -54,78 +61,144 @@ export default function VideoMonitor({
       doPlay();
     } else {
       const onReady = () => {
-        video.removeEventListener('loadedmetadata', onReady);
+        video.removeEventListener('loadeddata', onReady);
         doPlay();
       };
-      video.addEventListener('loadedmetadata', onReady);
+      // FIX: listen for 'loadeddata' (readyState ≥ 2) rather than
+      // 'loadedmetadata' (readyState ≥ 1) — ensures enough data is buffered
+      // before we call play(), which reduces AbortError noise on Safari.
+      video.addEventListener('loadeddata', onReady);
     }
   }, []);
 
-  // 🔥 CRITICAL FIX: Always re-attach on stream change or track enable/disable
+  // ─────────────────────────────────────────────────────────────────────────
+  // CHECK VIDEO TRACKS
+  // ─────────────────────────────────────────────────────────────────────────
+  const refreshHasVideoTrack = useCallback((s: MediaStream | null) => {
+    if (!s) {
+      setHasVideoTrack(false);
+      return;
+    }
+    const live = s.getVideoTracks().some(
+      t => t.readyState === 'live' && t.enabled,
+    );
+    setHasVideoTrack(live);
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ATTACH STREAM
+  //
+  // FIX (vs original): The original called video.load() AFTER setting
+  // srcObject. On Safari this resets the element and clears srcObject,
+  // causing a blank video. The correct sequence is:
+  //   1. pause()
+  //   2. srcObject = null  (detach old stream)
+  //   3. load()            (reset element state)
+  //   4. srcObject = newStream
+  //   5. play()
+  //
+  // We also skip re-attaching when the stream id hasn't changed (avoids
+  // an unnecessary flicker on React re-renders that pass the same stream).
+  // ─────────────────────────────────────────────────────────────────────────
   const attachStream = useCallback((s: MediaStream | null) => {
     const video = videoRef.current;
     if (!video) return;
 
-    // Always pause and reset before attaching new stream
+    const incomingId = s?.id ?? null;
+
+    // Skip if same stream is already attached
+    if (incomingId !== null && incomingId === attachedStreamIdRef.current) {
+      // Still refresh hasVideoTrack in case tracks changed on the same stream
+      refreshHasVideoTrack(s);
+      return;
+    }
+
+    // Cancel any in-flight play() before we touch the element
+    if (playPromiseRef.current) {
+      playPromiseRef.current.then(() => attachStream(s)).catch(() => attachStream(s));
+      return;
+    }
+
+    // 1. Pause
     if (!video.paused) {
       video.pause();
     }
-    playPromiseRef.current = null;
+
+    // 2. Detach old stream
+    video.srcObject = null;
+
+    // 3. Reset element (must happen BEFORE setting new srcObject)
+    video.load();
+
+    attachedStreamIdRef.current = incomingId;
 
     if (s) {
+      // 4. Attach new stream
       video.srcObject = s;
-      const videoTracks = s.getVideoTracks();
-      setHasVideoTrack(videoTracks.length > 0 && videoTracks.some(t => t.readyState === 'live'));
-      
-      // 🔥 FIX: Force load() to ensure video element picks up the stream
-      video.load();
+      refreshHasVideoTrack(s);
+      // 5. Play
       safePlay(video);
     } else {
-      video.srcObject = null;
-      video.load();
       setHasVideoTrack(false);
       setNeedsTap(false);
     }
-  }, [safePlay]);
+  }, [safePlay, refreshHasVideoTrack]);
 
-  // 🔥 FIX: Listen for track changes and re-attach
+  // ─────────────────────────────────────────────────────────────────────────
+  // STREAM CHANGE EFFECT
+  // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     attachStream(stream);
     if (!stream) return;
 
+    // Re-attach when the browser adds/removes tracks on the same stream object
+    // (e.g. when replaceTrack changes the underlying track mid-session).
     const onAddTrack = (e: MediaStreamTrackEvent) => {
-      const video = videoRef.current;
-      if (!video) return;
-
       if (e.track.kind === 'video') {
-        setHasVideoTrack(true);
+        e.track.addEventListener('unmute', () => refreshHasVideoTrack(stream));
+        e.track.addEventListener('ended', () => refreshHasVideoTrack(stream));
+        refreshHasVideoTrack(stream);
+        // Force video element to pick up the new track
+        const video = videoRef.current;
+        if (video) {
+          // Only re-attach if this is a new stream id (shouldn't be, but be safe)
+          if (video.srcObject !== stream) {
+            attachStream(stream);
+          } else {
+            // Same stream object, track was added — reload so the element notices
+            if (playPromiseRef.current) return;
+            video.pause();
+            video.srcObject = null;
+            video.load();
+            video.srcObject = stream;
+            safePlay(video);
+          }
+        }
       }
-
-      // Re-init video element with updated stream
-      if (!video.paused) video.pause();
-      playPromiseRef.current = null;
-      video.srcObject = null;
-      video.load();
-      video.srcObject = stream;
-      safePlay(video);
     };
 
     const onRemoveTrack = (e: MediaStreamTrackEvent) => {
       if (e.track.kind === 'video') {
-        const remaining = stream.getVideoTracks().filter(t => t.readyState === 'live');
-        setHasVideoTrack(remaining.length > 0);
+        refreshHasVideoTrack(stream);
       }
     };
 
-    const trackListeners: Array<{ track: MediaStreamTrack; onMute: () => void; onUnmute: () => void }> = [];
-
+    // Per-track mute/unmute listeners — remote tracks mute when disabled
+    const trackCleanups: (() => void)[] = [];
     const attachTrackListeners = () => {
-      stream.getVideoTracks().forEach(track => {
-        const onMute = () => setHasVideoTrack(false);
-        const onUnmute = () => setHasVideoTrack(true);
+      stream.getTracks().forEach(track => {
+        const onMute = () => {
+          if (track.kind === 'video') setHasVideoTrack(false);
+        };
+        const onUnmute = () => {
+          if (track.kind === 'video') setHasVideoTrack(true);
+        };
         track.addEventListener('mute', onMute);
         track.addEventListener('unmute', onUnmute);
-        trackListeners.push({ track, onMute, onUnmute });
+        trackCleanups.push(() => {
+          track.removeEventListener('mute', onMute);
+          track.removeEventListener('unmute', onUnmute);
+        });
       });
     };
     attachTrackListeners();
@@ -136,19 +209,22 @@ export default function VideoMonitor({
     return () => {
       stream.removeEventListener('addtrack', onAddTrack);
       stream.removeEventListener('removetrack', onRemoveTrack);
-      trackListeners.forEach(({ track, onMute, onUnmute }) => {
-        track.removeEventListener('mute', onMute);
-        track.removeEventListener('unmute', onUnmute);
-      });
+      trackCleanups.forEach(fn => fn());
     };
-  }, [stream, attachStream, safePlay]);
+  }, [stream, attachStream, safePlay, refreshHasVideoTrack]);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // FULLSCREEN LISTENER
+  // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // HANDLERS
+  // ─────────────────────────────────────────────────────────────────────────
   const handleManualPlay = () => {
     const video = videoRef.current;
     if (!video) return;
@@ -186,6 +262,10 @@ export default function VideoMonitor({
   };
 
   const pipAvailable = typeof document !== 'undefined' && !!document.pictureInPictureEnabled;
+
+  // FIX: For remote peers, cameraEnabled is not passed (defaults true), so
+  // we must also check hasVideoTrack to decide whether to show "CAM OFF".
+  // Show cam-off overlay only when stream exists but has no live video track.
   const showCamOff = stream !== null && (!cameraEnabled || !hasVideoTrack);
 
   return (
@@ -203,6 +283,7 @@ export default function VideoMonitor({
             style={{ pointerEvents: 'none' }}
           />
 
+          {/* Tap-to-play overlay (autoplay blocked by browser) */}
           {needsTap && (
             <button
               onClick={handleManualPlay}
@@ -219,7 +300,8 @@ export default function VideoMonitor({
             </button>
           )}
 
-          {showCamOff && (
+          {/* Camera off overlay */}
+          {showCamOff && !needsTap && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0f0a0a]/95 z-10">
               <div className="w-14 h-14 border-[3px] border-[#4C5C2D] flex items-center justify-center">
                 <svg className="w-7 h-7 text-[#4C5C2D]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -232,6 +314,7 @@ export default function VideoMonitor({
           )}
         </>
       ) : (
+        /* No stream at all */
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0f0a0a]">
           <div className="w-16 h-16 border-[3px] border-[#4C5C2D] flex items-center justify-center">
             <svg className="w-8 h-8 text-[#4C5C2D]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -243,6 +326,7 @@ export default function VideoMonitor({
         </div>
       )}
 
+      {/* Label bar */}
       <div className="absolute bottom-0 left-0 right-0 flex justify-between items-center px-3 py-1.5 bg-[#1B0C0C]/90 border-t-[2px] border-[#4C5C2D] z-10">
         <div className="flex items-center gap-2 min-w-0">
           {isLive && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />}
