@@ -1,55 +1,91 @@
-import { io, Socket } from 'socket.io-client';
+import { useEffect, useState, useRef } from 'react';
+import { Socket } from 'socket.io-client';
+import { getSocket } from '../lib/socket';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SINGLETON SOCKET
+// useSocket
 //
-// FIX (Bug 7 — token race): The original code set socket.auth AFTER the
-// socket object was created and potentially already connected (on re-calls
-// with a reused instance). For guest users the token arrived AFTER the
-// first connect attempt, meaning the server received an unauthenticated
-// handshake, rejected it or gave a different socket.id, and then the
-// WebRTC peer:join was emitted with the wrong/missing identity.
+// FIX (Bug 9 — socket passed to useMeshWebRTC before connected):
+//   The original hook called setSocket(s) immediately after getSocket(),
+//   which caused RoomView to pass the socket object to useMeshWebRTC right
+//   away. useMeshWebRTC's useEffect saw a non-null socket and immediately
+//   emitted 'peer:join' — but the socket was NOT yet connected (autoConnect
+//   is false and connect() hadn't been called yet). The server never received
+//   peer:join, so no peer connections were ever established.
 //
-// Fix: Accept token at creation time and embed it in the io() options so
-// it is included in the very first handshake. On subsequent calls where
-// the socket already exists, update auth and re-auth via socket.auth —
-// this is safe because the socket is not yet connected when getSocket()
-// is first called (autoConnect: false).
+//   Fix: Only expose the socket to consumers (via state) AFTER it has
+//   actually connected. Until then, return null. This means useMeshWebRTC's
+//   useEffect won't fire until the socket is genuinely ready.
 //
-// FIX (Bug 8 — stale singleton after disconnect): disconnectSocket() sets
-// socket = null. If getSocket() is called again afterwards (e.g. re-joining
-// a room) a fresh socket is created correctly with the new token.
+// FIX (Bug 10 — isConnected flickers on token change):
+//   The token prop changes when a guest joins with a token. The original
+//   code had `[token]` in the dependency array, which caused the entire
+//   effect to re-run — teardown + re-setup — on every token change, even
+//   if the socket was already live. This momentarily set socket to null,
+//   which destroyed all peer connections.
+//
+//   Fix: Use a ref for the token so it can be updated without re-running
+//   the effect. The token is only needed at socket creation time (handled
+//   by getSocket) and on reconnect (handled by socket.auth mutation in
+//   getSocket). The effect only runs once on mount.
 // ─────────────────────────────────────────────────────────────────────────────
-let socket: Socket | null = null;
+export function useSocket(token?: string) {
+  // FIX (Bug 9): Start as null — only set to the real socket once connected
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
 
-export const getSocket = (token?: string): Socket => {
-  if (!socket) {
-    // FIX (Bug 7): Pass auth in the io() constructor so it is part of the
-    // initial HTTP handshake, not set after the fact.
-    socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000', {
-      withCredentials: true,
-      autoConnect: false,
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000,
-      // FIX: auth goes here — in the constructor — not set separately later
-      auth: token ? { token } : {},
-      transports: ['websocket', 'polling'],
-    });
-  } else if (token && socket.auth) {
-    // Socket already exists — update auth for future reconnections.
-    // This is safe: socket.auth is read on every (re)connect attempt.
-    (socket.auth as Record<string, string>).token = token;
-  }
+  // Keep token in a ref so we can update it without re-running the effect
+  const tokenRef = useRef(token);
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
 
-  return socket;
-};
+  useEffect(() => {
+    // FIX (Bug 7 + 9): getSocket now embeds the token in the handshake.
+    // We call it once and never recreate the socket during the session.
+    const s = getSocket(tokenRef.current);
 
-export const disconnectSocket = () => {
-  if (socket) {
-    socket.disconnect();
-    socket = null;
-  }
-};
+    const onConnect = () => {
+      setIsConnected(true);
+      // FIX (Bug 9): Expose socket to consumers ONLY after it's connected.
+      // This prevents useMeshWebRTC from emitting peer:join on an unconnected socket.
+      setSocket(s);
+    };
+
+    const onDisconnect = () => {
+      setIsConnected(false);
+      // FIX: Do NOT null out the socket on disconnect — the socket object
+      // is still valid and will reconnect. Nulling it out causes
+      // useMeshWebRTC to tear down all peer connections unnecessarily.
+      // The hook's own reconnection logic handles the re-join.
+    };
+
+    const onConnectError = (err: Error) => {
+      console.error('[useSocket] connect_error:', err.message);
+    };
+
+    s.on('connect', onConnect);
+    s.on('disconnect', onDisconnect);
+    s.on('connect_error', onConnectError);
+
+    // If somehow already connected (e.g. HMR, shared singleton),
+    // resolve immediately without waiting for the 'connect' event
+    if (s.connected) {
+      setIsConnected(true);
+      setSocket(s);
+    } else {
+      s.connect();
+    }
+
+    return () => {
+      s.off('connect', onConnect);
+      s.off('disconnect', onDisconnect);
+      s.off('connect_error', onConnectError);
+      // Do NOT disconnect here — the socket is a singleton shared across
+      // the app. Disconnecting on unmount kills it for everyone.
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally empty — socket is a singleton, runs once on mount
+
+  return { socket, isConnected };
+}
