@@ -40,9 +40,14 @@ export default function Dashboard() {
             <h1 className="text-3xl font-sans font-bold tracking-tight text-white">Broadcast Center</h1>
             <p className="text-brand-gray text-sm font-medium">Manage and access your active rooms.</p>
           </div>
-          <Link href="/room/create">
-            <RetroButton>+ Create Room</RetroButton>
-          </Link>
+          <div className="flex items-center gap-3 w-full md:w-auto">
+            <Link href="/join" className="flex-1 md:flex-none">
+              <RetroButton className="w-full !bg-brand-surface-2/40 !text-brand-white border border-brand-border/40 hover:!bg-brand-surface transition-colors">Join Room</RetroButton>
+            </Link>
+            <Link href="/room/create" className="flex-1 md:flex-none">
+              <RetroButton className="w-full">+ Create Room</RetroButton>
+            </Link>
+          </div>
         </div>
 
         {rooms.length === 0 ? (
