@@ -32,7 +32,7 @@ export default function CreateRoom() {
         streamType,
         maxParticipants: Number(maxParticipants)
       });
-      router.push(`/room/${res.data.roomId}`);
+      router.push(`/room/${res.data.room.roomId}`);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to initialize session');
       setIsSubmitting(false);
