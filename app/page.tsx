@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { motion, useMotionValue, useSpring } from 'framer-motion';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
+import { useAuth } from '@/hooks/useAuth';
 
 const TOTAL_FRAMES = 192;
 const FRAME_DELAY_MS = 41;
@@ -73,6 +74,7 @@ export default function Home() {
   const [currentFrame, setCurrentFrame] = useState(0);
   const frameRef = useRef(0);
   const monitorRef = useRef<HTMLDivElement>(null);
+  const { user, loading } = useAuth();
 
   const rotX = useMotionValue(0);
   const rotY = useMotionValue(0);
@@ -165,15 +167,29 @@ export default function Home() {
               Systems online
             </span>
           </div>
-          <Link href="/auth/login">
-            <span style={{
-              fontSize: 13, fontWeight: 500,
-              color: 'rgba(255,255,255,0.5)',
-              cursor: 'pointer', letterSpacing: '-0.01em',
-            }}>
-              Sign in
-            </span>
-          </Link>
+          {loading ? (
+            <div style={{ width: 60, height: 20 }} /> // Placeholder to prevent layout shift
+          ) : user ? (
+            <Link href="/dashboard">
+              <span style={{
+                fontSize: 13, fontWeight: 500,
+                color: 'rgba(255,255,255,0.5)',
+                cursor: 'pointer', letterSpacing: '-0.01em',
+              }}>
+                Dashboard
+              </span>
+            </Link>
+          ) : (
+            <Link href="/auth/login">
+              <span style={{
+                fontSize: 13, fontWeight: 500,
+                color: 'rgba(255,255,255,0.5)',
+                cursor: 'pointer', letterSpacing: '-0.01em',
+              }}>
+                Sign in
+              </span>
+            </Link>
+          )}
         </div>
       </motion.nav>
 
@@ -209,7 +225,7 @@ export default function Home() {
               background: 'rgba(251,146,60,0.18)', color: 'rgba(251,146,60,0.9)',
             }}>Beta</span>
             <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)', letterSpacing: '-0.01em' }}>
-              Open · Encrypted · Zero installs
+              Secure · Authenticated · High-Fidelity
             </span>
           </motion.div>
 
@@ -245,7 +261,7 @@ export default function Home() {
               maxWidth: 390,
             }}
           >
-            Open a room instantly. Broadcast live, share your screen, or sync video with anyone — peer-to-peer, no accounts needed.
+            Open a room instantly. Broadcast live, share your screen, or sync video with anyone — peer-to-peer, secure, authenticated sessions.
           </motion.p>
 
           {/* CTA buttons */}
@@ -257,7 +273,7 @@ export default function Home() {
           >
             {/* Primary */}
             <Magnetic>
-              <Link href="/auth/login">
+              <Link href={user ? "/dashboard" : "/auth/register"}>
                 <motion.button
                   whileHover={{ scale: 1.018 }}
                   whileTap={{ scale: 0.962 }}

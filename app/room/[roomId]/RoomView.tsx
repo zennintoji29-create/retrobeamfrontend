@@ -358,6 +358,19 @@ export default function RoomView({
     }),
   ].filter(Boolean) as any[];
 
+  // ── explicitly prioritize the host's tile ──
+  allTiles.sort((a, b) => {
+    // Local user always first (if they are host or not, though could change if needed)
+    if (a.id === 'local' || a.id === 'local-screen') return -1;
+    if (b.id === 'local' || b.id === 'local-screen') return 1;
+
+    const peerA = remotePeers.find(p => p.peerId === a.peerId);
+    const peerB = remotePeers.find(p => p.peerId === b.peerId);
+    if (peerA?.isHost && !peerB?.isHost) return -1;
+    if (!peerA?.isHost && peerB?.isHost) return 1;
+    return 0;
+  });
+
   const gridColsClass =
     allTiles.length <= 1 ? 'grid-cols-1'
     : allTiles.length <= 2 ? 'grid-cols-1 sm:grid-cols-2'
