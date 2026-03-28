@@ -91,6 +91,12 @@ export default function Home() {
   }, [rotX, rotY]);
 
   useEffect(() => {
+    // Preload frames in background to prevent (canceled) network requests
+    for (let i = 0; i < TOTAL_FRAMES; i++) {
+      const img = new window.Image();
+      img.src = getFrameSrc(i);
+    }
+
     const id = setInterval(() => {
       frameRef.current = (frameRef.current + 1) % TOTAL_FRAMES;
       setCurrentFrame(frameRef.current);
@@ -429,13 +435,10 @@ export default function Home() {
 
               {/* Video */}
               <div style={{ position: 'relative', aspectRatio: '16/9', background: '#000', overflow: 'hidden' }}>
-                <Image
+                <img
                   src={getFrameSrc(currentFrame)}
-                  alt=""
-                  fill
-                  style={{ objectFit: 'cover' }}
-                  priority={currentFrame < 5}
-                  unoptimized
+                  alt="Video Sequence Frame"
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />
                 {/* Vignette */}
                 <div style={{
