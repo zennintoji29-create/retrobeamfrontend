@@ -24,36 +24,43 @@ export default function Login() {
       setUser(res.data.user);
       router.push('/dashboard');
     } catch (err: any) {
-      setError(err.response?.data?.message || 'INVALID CREDENTIALS');
+      setError(err.response?.data?.message || 'Invalid credentials');
     }
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-[100dvh] flex flex-col bg-brand-base text-brand-white">
       <Navbar />
       <main className="flex-1 flex items-center justify-center p-6">
-        <RetroCard className="w-full max-w-md">
-          <h1 className="text-2xl font-heading tracking-widest text-synth-cyan mb-6 glow-text">{`> SYSTEM ACCESS`}</h1>
+        <RetroCard className="w-full max-w-sm">
+          <div className="flex flex-col gap-2 mb-8">
+            <h1 className="text-2xl font-sans font-bold tracking-tight text-white drop-shadow-sm">Sign in</h1>
+            <p className="text-brand-gray text-sm">Welcome back to your dashboard.</p>
+          </div>
+          
           <form onSubmit={handleLogin} className="flex flex-col gap-4">
             <RetroInput 
-              label="USERNAME" 
+              label="Username" 
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
             />
             <RetroInput 
-              label="PASSWORD" 
+              label="Password" 
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
             />
-            {error && <div className="text-synth-cyan animate-pulse mb-4 text-sm font-body">{`! ERROR: ${error}`}</div>}
-            <RetroButton type="submit" fullWidth>AUTHENTICATE</RetroButton>
+            
+            {error && <div className="text-brand-danger bg-brand-danger/10 p-3 rounded-xl border border-brand-danger/20 text-sm font-medium animate-pulse mb-2">{error}</div>}
+            
+            <RetroButton type="submit" fullWidth className="mt-2 text-base shadow-lg">Sign In</RetroButton>
           </form>
-          <div className="mt-6 text-center text-synth-dim text-sm font-body">
-            {`NO ACCESS YET? `}
-            <Link href="/auth/register" className="text-synth-cyan hover:underline">REGISTER</Link>
+          
+          <div className="mt-8 text-center text-brand-gray text-sm font-medium">
+            Don&apos;t have an account?{' '}
+            <Link href="/auth/register" className="text-brand-accent hover:text-brand-accent-hover font-semibold transition-colors">Create one</Link>
           </div>
         </RetroCard>
       </main>

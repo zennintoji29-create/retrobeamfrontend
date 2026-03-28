@@ -10,18 +10,18 @@ interface Props extends Omit<HTMLMotionProps<'button'>, 'children'> {
 }
 
 export default function RetroButton({ variant = 'primary', fullWidth, className = '', children, ...props }: Props) {
-  const baseClasses = 'relative font-heading text-2xl uppercase tracking-[0.1em] px-8 py-4 transition-all duration-300 font-bold overflow-hidden rounded-md';
+  const baseClasses = 'relative font-sans text-sm font-semibold rounded-xl px-5 py-2.5 transition-all duration-200 overflow-hidden flex items-center justify-center gap-2';
   
   let variantClasses = '';
   switch (variant) {
     case 'primary':
-      variantClasses = 'bg-synth-cyan/10 text-synth-cyan border border-synth-cyan/50 shadow-[0_0_15px_rgba(0,240,255,0.2)] hover:bg-synth-cyan hover:text-synth-void hover:shadow-neon-cyan disabled:opacity-50 disabled:hover:bg-synth-cyan/10 disabled:hover:text-synth-cyan portal-hover';
+      variantClasses = 'bg-brand-white text-brand-base hover:bg-white border border-transparent shadow-[0_1px_3px_rgba(0,0,0,0.5)] disabled:opacity-50 disabled:hover:bg-brand-white';
       break;
     case 'danger':
-      variantClasses = 'bg-synth-red/10 text-synth-red border border-synth-red/50 shadow-[0_0_15px_rgba(229,9,20,0.2)] hover:bg-synth-red hover:text-white hover:shadow-neon-red disabled:opacity-50 portal-hover';
+      variantClasses = 'bg-brand-danger text-white hover:bg-red-600 border border-transparent shadow-sm disabled:opacity-50';
       break;
     case 'ghost':
-      variantClasses = 'bg-transparent border border-synth-dim/40 text-synth-dim hover:text-white hover:border-white hover:shadow-[0_0_10px_rgba(255,255,255,0.2)] disabled:opacity-50';
+      variantClasses = 'bg-brand-surface-2/40 border border-brand-border text-brand-white hover:bg-brand-surface-2 hover:border-brand-border/80 shadow-sm disabled:opacity-50';
       break;
   }
 
@@ -29,14 +29,12 @@ export default function RetroButton({ variant = 'primary', fullWidth, className 
 
   return (
     <motion.button 
-      whileHover={{ scale: 1.02, textShadow: "0px 0px 8px rgb(255,255,255)" }}
+      whileHover={{ scale: 1.015 }}
       whileTap={{ scale: 0.98 }}
-      className={`${baseClasses} ${variantClasses} ${widthClass} ${className} group`}
+      className={`${baseClasses} ${variantClasses} ${widthClass} ${className}`}
       {...props}
     >
-      <span className="relative z-10 drop-shadow-md">{children}</span>
-      {/* Button inner glow effect on hover */}
-      <div className="absolute inset-0 bg-white opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
+      <span className="relative z-10">{children}</span>
     </motion.button>
   );
 }

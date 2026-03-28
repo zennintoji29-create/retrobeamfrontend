@@ -31,13 +31,13 @@ export default function BootText({ lines, onComplete, speed = 40 }: Props) {
         setVisibleLines(prev => [...prev, currentFullLine]);
         setCurrentLineIndex(prev => prev + 1);
         setCurrentCharIndex(0);
-      }, 500); // pause between lines
+      }, 500);
       return () => clearTimeout(timeout);
     }
   }, [currentLineIndex, currentCharIndex, lines, speed, onComplete]);
 
   return (
-    <div className="font-mono text-retro-green text-lg md:text-2xl flex flex-col items-start glow-text">
+    <div className="font-mono text-brand-gray text-base md:text-lg flex flex-col items-start">
       {visibleLines.map((line, i) => (
         <div key={i} className="mb-2 whitespace-pre-wrap">{line}</div>
       ))}
@@ -45,13 +45,13 @@ export default function BootText({ lines, onComplete, speed = 40 }: Props) {
       {currentLineIndex < lines.length && (
         <div className="flex mb-2 whitespace-pre-wrap">
           {lines[currentLineIndex].substring(0, currentCharIndex)}
-          <span className="w-3 bg-retro-green animate-blink inline-block ml-1">&nbsp;</span>
+          <span className="w-2 bg-brand-accent animate-pulse inline-block ml-1">&nbsp;</span>
         </div>
       )}
       
       {currentLineIndex >= lines.length && (
         <div className="flex mb-2">
-          <span className="w-3 bg-retro-green animate-blink inline-block">&nbsp;</span>
+          <span className="w-2 bg-brand-accent animate-pulse inline-block">&nbsp;</span>
         </div>
       )}
     </div>

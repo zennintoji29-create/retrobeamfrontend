@@ -24,11 +24,11 @@ export default function RoomPage() {
         setRoom(res.data.room);
       } catch (err: any) {
         if (err.response?.status === 404) {
-          setError('ROOM NOT FOUND');
+          setError('Room not found');
         } else if (err.response?.status === 401) {
           router.push('/join');
         } else {
-          setError('COMMUNICATION ERROR');
+          setError('Connection error');
         }
       } finally {
         setFetching(false);
@@ -38,20 +38,29 @@ export default function RoomPage() {
     fetchRoom();
   }, [params.roomId, loading, router]);
 
-  if (loading || fetching) return <div className="min-h-screen p-6 font-mono text-retro-dim bg-retro-bg">SECURING CONNECTION...</div>;
+  if (loading || fetching) return (
+    <div className="min-h-[100dvh] flex items-center justify-center bg-brand-base text-brand-gray font-sans text-sm">
+      Securing connection...
+    </div>
+  );
 
   if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6 bg-retro-bg font-mono text-retro-red uppercase">
-        {`! ${error}`}
+      <div className="min-h-[100dvh] flex flex-col items-center justify-center gap-4 bg-brand-base text-brand-white">
+        <div className="text-brand-danger font-semibold text-lg">{error}</div>
+        <button
+          onClick={() => router.push('/dashboard')}
+          className="text-brand-accent hover:text-brand-accent-hover text-sm font-medium transition-colors"
+        >
+          ← Return to Dashboard
+        </button>
       </div>
     );
   }
 
-  const isBroadcaster = user && room && user.id === room.hostId;
-  const isHost = isBroadcaster || (user && room && user.id === room.hostId);
+  const isHost = user && room && user.id === room.hostId;
 
-  if (!user && !loading) return null; // safety check handled by useAuth
+  if (!user && !loading) return null;
 
   return <RoomView room={room} isHost={!!isHost} />;
 }

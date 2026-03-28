@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import RetroCard from '@/components/RetroCard';
 import RetroInput from '@/components/RetroInput';
@@ -11,52 +10,48 @@ import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 
 export default function Join() {
-  const { user, loading } = useAuth(true);
   const [roomId, setRoomId] = useState('');
-  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const router = useRouter();
+  const { user, loading } = useAuth(); // Auth is optional for landing, but required to join
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) {
+      router.push('/auth/login');
+      return;
+    }
     try {
-      await api.post(`/rooms/join/${roomId}`, { password });
+      await api.get(`/rooms/${roomId}`);
       router.push(`/room/${roomId}`);
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'ACCESS DENIED');
+    } catch (err) {
+      setError('Room not found or unauthorized');
     }
   };
 
-  if (loading) return <div className="min-h-screen p-6 font-mono text-retro-dim bg-synth-void">LOADING...</div>;
-  if (!user) return null;
-
   return (
-    <div className="min-h-screen flex flex-col bg-synth-void">
+    <div className="min-h-[100dvh] flex flex-col bg-brand-base text-brand-white">
       <Navbar user={user} />
-      <main className="flex-1 flex items-center justify-center p-6 bg-synth-void">
+      <main className="flex-1 flex items-center justify-center p-6">
         <RetroCard className="w-full max-w-md">
-          <h1 className="text-2xl font-heading tracking-widest text-synth-cyan mb-6 glow-text">{`> CONNECT TO BROADCAST`}</h1>
+          <div className="flex flex-col gap-2 mb-8">
+            <h1 className="text-2xl font-sans font-bold tracking-tight text-white drop-shadow-sm">Join a session</h1>
+            <p className="text-brand-gray text-sm">Enter the secure room ID to connect.</p>
+          </div>
+
           <form onSubmit={handleJoin} className="flex flex-col gap-4">
             <RetroInput 
-              label="ROOM ID" 
+              label="Room ID" 
+              placeholder="e.g. xk7m2"
               value={roomId}
               onChange={(e) => setRoomId(e.target.value)}
               required
             />
-            <RetroInput 
-              label="PASSWORD (IF SECURED)" 
-              type="password"
-              placeholder="Leave blank if none"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            {error && <div className="text-synth-cyan animate-pulse mb-4 text-sm font-body">{`! ERROR: ${error}`}</div>}
-            <RetroButton type="submit" fullWidth>ESTABLISH CONNECTION</RetroButton>
+            
+            {error && <div className="text-brand-danger bg-brand-danger/10 p-3 rounded-xl border border-brand-danger/20 text-sm font-medium animate-pulse mb-2">{error}</div>}
+            
+            <RetroButton type="submit" fullWidth className="mt-2 text-base shadow-lg">Connect</RetroButton>
           </form>
-          <div className="mt-6 text-center text-synth-dim text-sm font-body">
-            {`OR `}
-            <Link href="/" className="text-synth-cyan hover:underline">RETURN TO MAIN MENU</Link>
-          </div>
         </RetroCard>
       </main>
     </div>

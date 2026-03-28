@@ -10,104 +10,94 @@ import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 
 export default function CreateRoom() {
-  const { user, loading, logout } = useAuth(true);
-  const router = useRouter();
-  
+  const { user, loading, logout } = useAuth(true); // Must be logged in
   const [name, setName] = useState('');
-  const [password, setPassword] = useState('');
-  const [streamType, setStreamType] = useState('screen');
-  const [videoUrl, setVideoUrl] = useState('');
+  const [streamType, setStreamType] = useState('camera');
+  const [maxParticipants, setMaxParticipants] = useState(10);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const router = useRouter();
+
+  if (loading) return <div className="min-h-[100dvh] flex items-center justify-center font-sans text-brand-gray bg-brand-base text-brand-white">Initializing Interface...</div>;
+  if (!user) return null;
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     try {
-      const res = await api.post('/rooms/create', { 
-        name, 
-        password, 
-        streamType, 
-        videoUrl: streamType === 'video' ? videoUrl : undefined 
+      const res = await api.post('/rooms/create', {
+        name: name || `${user.username}'s Room`,
+        streamType,
+        maxParticipants: Number(maxParticipants)
       });
-      router.push(`/room/${res.data.room.roomId}`);
+      router.push(`/room/${res.data.roomId}`);
     } catch (err: any) {
-      setError(err.response?.data?.message || 'FAILED TO INITIALIZE ROOM');
+      setError(err.response?.data?.message || 'Failed to initialize session');
       setIsSubmitting(false);
     }
   };
 
-  if (loading) return null;
-
   return (
-    <div className="min-h-screen flex flex-col bg-synth-void">
+    <div className="min-h-[100dvh] flex flex-col bg-brand-base text-brand-white">
       <Navbar user={user} logout={logout} />
       <main className="flex-1 flex items-center justify-center p-6">
         <RetroCard className="w-full max-w-lg">
-          <h1 className="text-2xl font-heading tracking-widest text-synth-cyan mb-6 glow-text">{`> INITIALIZE NEW BROADCAST`}</h1>
-          <form onSubmit={handleCreate} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2 mb-8">
+            <h1 className="text-2xl font-sans font-bold tracking-tight text-white drop-shadow-sm">Create Session</h1>
+            <p className="text-brand-gray text-sm">Configure your new secure meeting context.</p>
+          </div>
+
+          <form onSubmit={handleCreate} className="flex flex-col gap-5">
             <RetroInput 
-              label="TRANSMISSION TITLE" 
+              label="Room Alias" 
+              placeholder={`${user.username}'s Session`}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              required
-            />
-            
-            <RetroInput 
-              label="SECURITY KEY (OPTIONAL)" 
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
             />
 
-            <div className="mb-4">
-              <label className="text-synth-dim font-body mb-2 uppercase text-sm block">TRANSMISSION SOURCE_</label>
+            <div className="flex flex-col gap-2">
+              <label className="text-brand-gray font-sans text-xs font-semibold tracking-widest uppercase">Stream Type</label>
               <div className="flex gap-4">
-                <label className="flex items-center gap-2 cursor-pointer group">
-                  <div className={`w-4 h-4 border border-synth-cyan flex items-center justify-center ${streamType === 'screen' ? 'bg-retro-green/20' : ''}`}>
-                    {streamType === 'screen' && <div className="w-2 h-2 bg-retro-green" />}
-                  </div>
+                <label className="flex items-center gap-2 cursor-pointer font-sans bg-brand-surface-2/40 px-4 py-3 rounded-xl border border-brand-border flex-1 border-opacity-70 hover:border-brand-accent/50 transition-colors">
                   <input 
                     type="radio" 
-                    name="streamType" 
+                    value="camera" 
+                    checked={streamType === 'camera'} 
+                    onChange={() => setStreamType('camera')}
+                    className="accent-brand-accent w-4 h-4 cursor-pointer"
+                  />
+                  <span className="text-brand-white text-sm font-medium">Camera</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer font-sans bg-brand-surface-2/40 px-4 py-3 rounded-xl border border-brand-border flex-1 border-opacity-70 hover:border-brand-accent/50 transition-colors">
+                  <input 
+                    type="radio" 
                     value="screen" 
                     checked={streamType === 'screen'} 
                     onChange={() => setStreamType('screen')}
-                    className="hidden" 
+                    className="accent-brand-accent w-4 h-4 cursor-pointer"
                   />
-                  <span className="font-body text-synth-cyan group-hover:glow-text">SCREEN SHARE</span>
-                </label>
-                
-                <label className="flex items-center gap-2 cursor-pointer group">
-                  <div className={`w-4 h-4 border border-synth-cyan flex items-center justify-center ${streamType === 'video' ? 'bg-retro-green/20' : ''}`}>
-                    {streamType === 'video' && <div className="w-2 h-2 bg-retro-green" />}
-                  </div>
-                  <input 
-                    type="radio" 
-                    name="streamType" 
-                    value="video" 
-                    checked={streamType === 'video'} 
-                    onChange={() => setStreamType('video')}
-                    className="hidden" 
-                  />
-                  <span className="font-body text-synth-cyan group-hover:glow-text">VIDEO URL</span>
+                  <span className="text-brand-white text-sm font-medium">Screen Share</span>
                 </label>
               </div>
             </div>
 
-            {streamType === 'video' && (
+            <div className="flex flex-col gap-2">
+              <label className="text-brand-gray font-sans text-xs font-semibold tracking-widest uppercase">Max Peers</label>
               <RetroInput 
-                label="VIDEO SOURCE URL" 
-                value={videoUrl}
-                onChange={(e) => setVideoUrl(e.target.value)}
-                required={streamType === 'video'}
+                label=""
+                type="number"
+                min="2"
+                max="50"
+                value={maxParticipants}
+                onChange={(e) => setMaxParticipants(Number(e.target.value))}
+                className="!mb-0"
               />
-            )}
+            </div>
 
-            {error && <div className="text-synth-cyan animate-pulse mb-4 text-sm font-body">{`! ERROR: ${error}`}</div>}
-            
-            <RetroButton type="submit" fullWidth disabled={isSubmitting}>
-              {isSubmitting ? 'INITIALIZING...' : 'LAUNCH TRANSMISSION'}
+            {error && <div className="text-brand-danger bg-brand-danger/10 p-3 rounded-xl border border-brand-danger/20 text-sm font-medium animate-pulse mt-2">{error}</div>}
+
+            <RetroButton type="submit" fullWidth disabled={isSubmitting} className="mt-4 text-base shadow-lg">
+              {isSubmitting ? 'Establishing Link...' : 'Create Room'}
             </RetroButton>
           </form>
         </RetroCard>

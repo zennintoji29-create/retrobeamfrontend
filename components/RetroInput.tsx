@@ -7,15 +7,15 @@ interface Props extends React.InputHTMLAttributes<HTMLInputElement> {
 
 export default function RetroInput({ label, error, className = '', ...props }: Props) {
   return (
-    <div className={`flex flex-col mb-5 ${className}`}>
-      <label className="text-synth-cyan font-heading text-lg tracking-widest mb-2 uppercase drop-shadow-[0_0_5px_rgba(0,240,255,0.5)]">
+    <div className={`flex flex-col mb-4 ${className}`}>
+      <label className="text-brand-gray font-sans text-xs font-semibold tracking-widest mb-1.5 uppercase">
         {label}
       </label>
       <input 
-        className={`glass-input font-body p-4 text-lg w-full placeholder-synth-dim/50 transition-all duration-300 ${error ? 'border-synth-red text-synth-red shadow-[0_0_10px_rgba(229,9,20,0.3)] focus:border-synth-red focus:ring-synth-red' : ''}`}
+        className={`w-full bg-brand-surface-2/40 border text-brand-white text-sm rounded-xl px-4 py-3 placeholder-brand-gray/40 transition-all duration-200 outline-none focus:ring-2 focus:ring-brand-accent/20 focus:border-brand-accent ${error ? 'border-brand-danger text-brand-danger focus:ring-brand-danger/20 focus:border-brand-danger' : 'border-brand-border hover:border-brand-border/80'}`}
         {...props}
       />
-      {error && <span className="text-synth-red text-sm mt-2 font-body font-bold animate-pulse drop-shadow-md">{error}</span>}
+      {error && <span className="text-brand-danger text-xs mt-1.5 font-medium">{error}</span>}
     </div>
   );
 }

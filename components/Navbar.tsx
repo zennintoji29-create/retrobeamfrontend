@@ -2,43 +2,45 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
+import { Menu, X } from 'lucide-react';
 
 export default function Navbar({ user, logout }: { user?: any, logout?: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
-    <nav className="border-b border-white/10 bg-synth-void/80 backdrop-blur-xl px-4 py-3 sticky top-0 z-40">
+    <nav className="border-b border-brand-border/40 bg-brand-base/80 backdrop-blur-xl px-4 py-3 sticky top-0 z-40">
       <div className="max-w-[1600px] mx-auto flex justify-between items-center">
         <Link
           href="/"
-          className="font-heading text-2xl sm:text-3xl lg:text-4xl text-white tracking-[0.15em] flex items-center gap-1 hover:text-synth-cyan transition-colors"
+          className="flex items-baseline gap-1.5 transition-colors group"
         >
-          RETRO<span className="text-synth-red">BEAM</span>
+          <span className="font-sans text-xl font-bold tracking-tight text-white group-hover:text-brand-white">meet</span>
+          <span className="font-sans text-sm font-semibold tracking-wide text-brand-gray group-hover:text-brand-gray/80">.exe</span>
         </Link>
 
         {/* Desktop Nav */}
-        <div className="hidden sm:flex items-center gap-4 lg:gap-6 font-body text-base">
+        <div className="hidden sm:flex items-center gap-4 lg:gap-6 font-sans text-sm">
           {user ? (
             <>
-              <div className="flex items-center gap-2 bg-white/5 px-3 py-1.5 rounded-full border border-white/10">
-                <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-synth-red to-synth-cyan flex items-center justify-center shadow-[0_0_10px_rgba(229,9,20,0.5)]">
-                  <span className="text-xs text-white font-bold">{user.username.charAt(0).toUpperCase()}</span>
+              <div className="flex items-center gap-2 bg-brand-surface-2/40 px-3 py-1.5 rounded-full border border-brand-border/40">
+                <div className="w-5 h-5 rounded-full bg-gradient-to-tr from-brand-accent to-brand-accent-hover flex items-center justify-center">
+                  <span className="text-[10px] text-white font-bold">{user.username.charAt(0).toUpperCase()}</span>
                 </div>
-                <span className="text-white text-sm font-medium tracking-wide hidden md:block">{user.username}</span>
+                <span className="text-brand-white text-xs font-semibold tracking-wide hidden md:block">{user.username}</span>
               </div>
-              <Link href="/dashboard" className="text-synth-cyan hover:text-white transition-colors uppercase tracking-widest font-bold text-sm">
+              <Link href="/dashboard" className="text-brand-gray hover:text-brand-white transition-colors font-semibold text-xs tracking-wide">
                 Dashboard
               </Link>
-              <button onClick={logout} className="text-synth-red hover:text-white transition-colors uppercase tracking-widest font-bold text-sm">
-                Abort
+              <button onClick={logout} className="text-brand-danger/80 hover:text-brand-danger transition-colors font-semibold text-xs tracking-wide">
+                Logout
               </button>
             </>
           ) : (
             <>
-              <Link href="/auth/login" className="text-white hover:text-synth-cyan transition-colors uppercase tracking-widest font-bold text-sm px-4">
+              <Link href="/auth/login" className="text-brand-gray hover:text-brand-white transition-colors font-semibold tracking-wide text-xs px-4">
                 Login
               </Link>
-              <Link href="/auth/register" className="bg-synth-red text-white px-5 py-2 rounded uppercase tracking-widest font-bold text-sm shadow-[0_0_15px_rgba(229,9,20,0.4)] hover:bg-white hover:text-synth-red transition-all">
+              <Link href="/auth/register" className="bg-brand-white text-brand-base px-4 py-2.5 rounded-xl font-semibold text-xs tracking-wide shadow-sm hover:bg-white hover:scale-105 transition-all">
                 Register
               </Link>
             </>
@@ -47,38 +49,38 @@ export default function Navbar({ user, logout }: { user?: any, logout?: () => vo
 
         {/* Mobile hamburger */}
         <button
-          className="sm:hidden text-white w-9 h-9 flex items-center justify-center border border-white/20 rounded hover:bg-white/10 transition-colors"
+          className="sm:hidden text-brand-gray w-9 h-9 flex items-center justify-center border border-brand-border/50 rounded-lg hover:bg-brand-surface transition-colors"
           onClick={() => setMenuOpen(v => !v)}
           aria-label="Menu"
         >
-          <span className="text-xl">{menuOpen ? '✕' : '☰'}</span>
+          {menuOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
       </div>
 
       {/* Mobile dropdown menu */}
       {menuOpen && (
-        <div className="sm:hidden mt-2 border-t border-white/10 pt-3 pb-2 flex flex-col gap-3 px-1">
+        <div className="sm:hidden mt-3 border-t border-brand-border/40 pt-3 pb-2 flex flex-col gap-3 px-1">
           {user ? (
             <>
               <div className="flex items-center gap-2 px-2">
-                <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-synth-red to-synth-cyan flex items-center justify-center">
+                <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-brand-accent to-brand-accent-hover flex items-center justify-center">
                   <span className="text-xs text-white font-bold">{user.username.charAt(0).toUpperCase()}</span>
                 </div>
-                <span className="text-white text-sm font-medium">{user.username}</span>
+                <span className="text-brand-white text-sm font-medium">{user.username}</span>
               </div>
-              <Link href="/dashboard" onClick={() => setMenuOpen(false)} className="text-synth-cyan uppercase tracking-widest font-bold text-sm px-2 py-1">
+              <Link href="/dashboard" onClick={() => setMenuOpen(false)} className="text-brand-gray hover:text-brand-white font-semibold text-sm px-2 py-1">
                 Dashboard
               </Link>
-              <button onClick={() => { setMenuOpen(false); logout?.(); }} className="text-synth-red uppercase tracking-widest font-bold text-sm px-2 py-1 text-left">
+              <button onClick={() => { setMenuOpen(false); logout?.(); }} className="text-brand-danger hover:text-red-500 font-semibold text-sm px-2 py-1 text-left">
                 Sign Out
               </button>
             </>
           ) : (
             <>
-              <Link href="/auth/login" onClick={() => setMenuOpen(false)} className="text-white uppercase tracking-widest font-bold text-sm px-2 py-1">
+              <Link href="/auth/login" onClick={() => setMenuOpen(false)} className="text-brand-gray hover:text-brand-white font-semibold text-sm px-2 py-1">
                 Login
               </Link>
-              <Link href="/auth/register" onClick={() => setMenuOpen(false)} className="bg-synth-red text-white px-4 py-2 uppercase tracking-widest font-bold text-sm text-center rounded">
+              <Link href="/auth/register" onClick={() => setMenuOpen(false)} className="bg-brand-white text-brand-base px-4 py-2 font-semibold text-sm text-center rounded-xl">
                 Register
               </Link>
             </>

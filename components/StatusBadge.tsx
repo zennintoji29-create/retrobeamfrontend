@@ -1,17 +1,17 @@
 export default function StatusBadge({ isLive }: { isLive: boolean }) {
   if (isLive) {
     return (
-      <div className="flex items-center gap-3 bg-synth-red/10 border border-synth-red/50 px-4 py-1.5 rounded-full shadow-[0_0_15px_rgba(229,9,20,0.3)] backdrop-blur-md">
-        <div className="w-2.5 h-2.5 rounded-full bg-synth-red animate-pulse shadow-[0_0_8px_#ff3c3c]"></div>
-        <span className="font-heading text-xl text-synth-red glow-text-red uppercase tracking-[0.2em] pt-0.5">LIVE</span>
+      <div className="flex items-center gap-2 bg-brand-danger/10 border border-brand-danger/40 px-3 py-1 rounded-full backdrop-blur-md">
+        <div className="w-2 h-2 rounded-full bg-brand-danger animate-pulse" />
+        <span className="font-sans text-xs font-bold text-brand-danger uppercase tracking-widest">Live</span>
       </div>
     );
   }
 
   return (
-    <div className="flex items-center gap-3 bg-white/5 border border-white/20 px-4 py-1.5 rounded-full opacity-70 backdrop-blur-md shadow-inner">
-      <div className="w-2.5 h-2.5 rounded-full bg-synth-dim"></div>
-      <span className="font-heading text-xl text-synth-dim uppercase tracking-[0.2em] pt-0.5">OFFLINE</span>
+    <div className="flex items-center gap-2 bg-brand-surface-2/40 border border-brand-border/50 px-3 py-1 rounded-full">
+      <div className="w-2 h-2 rounded-full bg-brand-gray/50" />
+      <span className="font-sans text-xs font-semibold text-brand-gray uppercase tracking-widest">Offline</span>
     </div>
   );
 }
