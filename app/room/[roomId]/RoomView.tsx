@@ -1,15 +1,12 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import VideoMonitor from '@/components/VideoMonitor';
 import { useSocket } from '@/hooks/useSocket';
 import { useMeshWebRTC } from '@/hooks/useMeshWebRTC';
 import { useAuth } from '@/hooks/useAuth';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 function getEmbedUrl(url: string): string {
   try {
     const parsed = new URL(url);
@@ -17,9 +14,13 @@ function getEmbedUrl(url: string): string {
     if (parsed.hostname === 'youtu.be') {
       videoId = parsed.pathname.slice(1).split('?')[0];
     } else if (parsed.hostname.includes('youtube.com')) {
-      if (parsed.pathname === '/watch')            videoId = parsed.searchParams.get('v') || '';
-      else if (parsed.pathname.startsWith('/embed/'))  return url;
-      else if (parsed.pathname.startsWith('/shorts/')) videoId = parsed.pathname.replace('/shorts/', '').split('?')[0];
+      if (parsed.pathname === '/watch') {
+        videoId = parsed.searchParams.get('v') || '';
+      } else if (parsed.pathname.startsWith('/embed/')) {
+        return url;
+      } else if (parsed.pathname.startsWith('/shorts/')) {
+        videoId = parsed.pathname.replace('/shorts/', '').split('?')[0];
+      }
     }
     if (videoId) return `https://www.youtube.com/embed/${videoId}?rel=0&autoplay=1`;
   } catch { /* ignored */ }
@@ -27,263 +28,120 @@ function getEmbedUrl(url: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Toast — lightweight in-app notification (no external deps)
+// Sidebar / panel
 // ─────────────────────────────────────────────────────────────────────────────
-interface Toast { id: number; message: string; type: 'info' | 'warn' | 'error' }
-
-function ToastContainer({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: number) => void }) {
-  return (
-    <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none max-w-[90vw] sm:max-w-xs">
-      {toasts.map(t => (
-        <div
-          key={t.id}
-          className={`pointer-events-auto flex items-start gap-2 border-[2px] border-[#1B0C0C] px-3 py-2 shadow-[4px_4px_0_#1B0C0C] font-heading text-sm font-bold uppercase tracking-wide
-            ${t.type === 'error' ? 'bg-red-600 text-white'
-            : t.type === 'warn'  ? 'bg-[#FFDE42] text-[#1B0C0C]'
-            :                      'bg-[#313E17] text-[#FFDE42]'}`}
-          onClick={() => dismiss(t.id)}
-        >
-          <span className="flex-1 leading-snug">{t.message}</span>
-          <span className="shrink-0 opacity-60 cursor-pointer">✕</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function useToast() {
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const push = useCallback((message: string, type: Toast['type'] = 'info', duration = 3500) => {
-    const id = Date.now() + Math.random();
-    setToasts(prev => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration);
-  }, []);
-  const dismiss = useCallback((id: number) => setToasts(prev => prev.filter(t => t.id !== id)), []);
-  return { toasts, push, dismiss };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Speaking detection — lightweight VAD via AnalyserNode
-// Returns a Set of MediaStream IDs that are currently speaking
-// ─────────────────────────────────────────────────────────────────────────────
-function useSpeakingDetection(streams: { id: string; stream: MediaStream | null }[]) {
-  const [speaking, setSpeaking] = useState<Set<string>>(new Set());
-  const analysersRef = useRef<Map<string, { ctx: AudioContext; source: MediaStreamAudioSourceNode; analyser: AnalyserNode; raf: number }>>(new Map());
-
-  useEffect(() => {
-    const threshold = 15; // RMS threshold — increase to reduce sensitivity
-
-    streams.forEach(({ id, stream }) => {
-      if (!stream || analysersRef.current.has(id)) return;
-      if (!stream.getAudioTracks().length) return;
-
-      try {
-        const ctx      = new AudioContext();
-        const source   = ctx.createMediaStreamSource(stream);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
-        source.connect(analyser);
-
-        const data  = new Uint8Array(analyser.frequencyBinCount);
-        let   raf   = 0;
-
-        const tick = () => {
-          analyser.getByteTimeDomainData(data);
-          let rms = 0;
-          for (let i = 0; i < data.length; i++) rms += (data[i] - 128) ** 2;
-          rms = Math.sqrt(rms / data.length);
-          setSpeaking(prev => {
-            const next = new Set(prev);
-            rms > threshold ? next.add(id) : next.delete(id);
-            return next;
-          });
-          raf = requestAnimationFrame(tick);
-        };
-        raf = requestAnimationFrame(tick);
-        analysersRef.current.set(id, { ctx, source, analyser, raf });
-      } catch { /* AudioContext may fail on some platforms */ }
-    });
-
-    // Clean up stale entries
-    const activeIds = new Set(streams.map(s => s.id));
-    analysersRef.current.forEach((entry, id) => {
-      if (!activeIds.has(id)) {
-        cancelAnimationFrame(entry.raf);
-        entry.ctx.close().catch(() => {});
-        analysersRef.current.delete(id);
-        setSpeaking(prev => { const n = new Set(prev); n.delete(id); return n; });
-      }
-    });
-  }, [streams]);
-
-  // Cleanup on unmount
-  useEffect(() => () => {
-    analysersRef.current.forEach(entry => {
-      cancelAnimationFrame(entry.raf);
-      entry.ctx.close().catch(() => {});
-    });
-    analysersRef.current.clear();
-  }, []);
-
-  return speaking;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SidePanel
-// ─────────────────────────────────────────────────────────────────────────────
-interface SidePanelProps {
-  room: any; participants: any[]; isHost: boolean; remotePeers: any[];
-  isConnected: boolean; videoUrlInput: string;
-  setVideoUrlInput: (v: string) => void; syncedVideo: any;
-  handleSyncVideo: () => void; handleStopVideo: () => void;
-  sendReaction: (e: string) => void; handleMute: (id: string) => void;
-  handleKick: (id: string) => void; handleBan: (id: string) => void;
-  raisedHands: Set<string>; socket: any; onCopyRoomId: () => void;
-}
-
 const SidePanel = ({
   room, participants, isHost, remotePeers, isConnected,
   videoUrlInput, setVideoUrlInput, syncedVideo, handleSyncVideo,
   handleStopVideo, sendReaction, handleMute, handleKick, handleBan,
-  raisedHands, socket, onCopyRoomId,
-}: SidePanelProps) => (
-  <div className="flex flex-col gap-3 p-3 h-full overflow-y-auto custom-scrollbar">
+  raisedHands, socket,
+}: any) => (
+  <div className="flex flex-col gap-4 p-4 h-full overflow-y-auto custom-scrollbar relative z-10">
 
-    {/* ── Data Feed ── */}
+    {/* Room Info */}
     <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
-      <div className="bg-[#313E17] px-3 py-2 border-b-[3px] border-[#4C5C2D]">
-        <h3 className="font-heading text-base font-black text-[#FFDE42] uppercase tracking-widest">Data Feed</h3>
+      <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D]">
+        <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Data Feed</h3>
       </div>
-      <div className="p-2 flex flex-col gap-1.5">
-        {/* Room ID with copy button */}
-        <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-1.5">
-          <span className="text-[#4C5C2D] font-heading text-[10px] font-bold tracking-widest uppercase shrink-0">Room ID</span>
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-[#FFDE42] font-mono font-bold text-xs select-all truncate">{room.roomId}</span>
-            <button
-              onClick={onCopyRoomId}
-              title="Copy Room ID"
-              className="shrink-0 text-[#4C5C2D] hover:text-[#FFDE42] transition-colors"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-            </button>
-          </div>
+      <div className="p-3 flex flex-col gap-2">
+        <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-2">
+          <span className="text-[#4C5C2D] font-heading text-sm font-bold tracking-widest uppercase">Room ID</span>
+          <span className="text-[#FFDE42] font-mono font-bold text-sm select-all">{room.roomId}</span>
         </div>
-        <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-1.5">
-          <span className="text-[#4C5C2D] font-heading text-[10px] font-bold tracking-widest uppercase">Nodes</span>
-          <span className="text-[#1B0C0C] bg-[#FFDE42] font-black text-sm font-heading px-2 py-0.5">{remotePeers.length + 1}</span>
+        <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-2">
+          <span className="text-[#4C5C2D] font-heading text-sm font-bold tracking-widest uppercase">Nodes</span>
+          <span className="text-[#1B0C0C] bg-[#FFDE42] font-black text-lg font-heading px-2 py-0.5">{remotePeers.length + 1}</span>
         </div>
-        <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-1.5">
-          <span className="text-[#4C5C2D] font-heading text-[10px] font-bold tracking-widest uppercase">Signal</span>
-          <div className="flex items-center gap-1.5">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-500'}`} />
-            <span className={`font-heading text-xs font-bold ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
-              {isConnected ? 'LIVE' : 'LOST'}
-            </span>
+        <div className="flex justify-between items-center border-[2px] border-[#313E17] bg-[#1B0C0C] px-3 py-2">
+          <span className="text-[#4C5C2D] font-heading text-sm font-bold tracking-widest uppercase">Signal</span>
+          <div className="flex items-center gap-2">
+            <div className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-500'}`} />
+            <span className="text-[#FFDE42] font-heading text-sm font-bold">{isConnected ? 'LIVE' : 'LOST'}</span>
           </div>
         </div>
       </div>
     </div>
 
-    {/* ── Participants ── */}
+    {/* Participants */}
     <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
-      <div className="bg-[#313E17] px-3 py-2 border-b-[3px] border-[#4C5C2D] flex justify-between items-center">
-        <h3 className="font-heading text-base font-black text-[#FFDE42] uppercase tracking-widest">Network Nodes</h3>
-        <span className="text-[10px] bg-[#FFDE42] text-[#1B0C0C] px-1.5 py-0.5 font-black">{participants.length}</span>
+      <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D] flex justify-between items-center">
+        <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Network Nodes</h3>
+        <span className="text-[10px] bg-[#FFDE42] text-[#1B0C0C] px-1.5 py-0.5 font-bold">{participants.length}</span>
       </div>
-      <div className="p-2 flex flex-col gap-1.5 max-h-[220px] overflow-y-auto custom-scrollbar">
-        {participants.length === 0 ? (
-          <p className="text-[10px] text-[#4C5C2D] font-mono p-2 animate-pulse">SCANNING FOR NODES...</p>
-        ) : participants.map((p: any) => (
-          <div key={p.peerId}
-            className="flex flex-col border border-[#313E17] p-2 bg-[#1B0C0C]/50 hover:bg-[#313E17]/30 transition-colors rounded-sm">
-            <div className="flex justify-between items-center gap-1.5">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.isHost ? 'bg-cyan-400' : 'bg-[#FFDE42]'}`} />
-                <span className={`font-mono text-xs truncate ${p.isHost ? 'text-cyan-400' : 'text-[#FFDE42]'}`}>
-                  {p.name}
-                  {p.peerId === socket?.id && <span className="text-[#4C5C2D] ml-1">(YOU)</span>}
+      <div className="p-2 flex flex-col gap-2 max-h-[300px] overflow-y-auto custom-scrollbar">
+        {participants.map((p: any) => (
+          <div key={p.peerId} className="flex flex-col border border-[#313E17] p-2 bg-[#1B0C0C]/50 hover:bg-[#313E17]/20 transition-colors">
+            <div className="flex justify-between items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className={`w-2 h-2 shrink-0 ${p.isHost ? 'bg-cyan-400' : 'bg-[#FFDE42]'}`} />
+                <span className={`font-mono text-sm truncate ${p.isHost ? 'text-cyan-400' : 'text-[#FFDE42]'}`}>
+                  {p.name} {p.peerId === socket?.id && '(YOU)'}
                 </span>
               </div>
-              <div className="flex items-center gap-1 shrink-0">
-                {p.isHost     && <span className="text-[8px] border border-cyan-400 text-cyan-400 px-1 font-bold">HOST</span>}
-                {raisedHands.has(p.peerId) && <span className="text-xs animate-bounce" title="Hand Raised">✋</span>}
-              </div>
+              {p.isHost && <span className="text-[8px] border border-cyan-400 text-cyan-400 px-1 font-bold shrink-0">HOST</span>}
+              {raisedHands.has(p.peerId) && <span className="text-xs" title="Hand Raised">✋</span>}
             </div>
-            {/* Host controls per participant */}
             {isHost && p.peerId !== socket?.id && (
-              <div className="flex gap-1 mt-1.5">
-                <button onClick={() => handleMute(p.peerId)}
-                  className="flex-1 bg-[#1B0C0C] hover:bg-red-900/30 text-red-400 border border-[#4C5C2D] text-[9px] py-1 font-bold uppercase transition-colors">
-                  MUTE
-                </button>
-                <button onClick={() => handleKick(p.peerId)}
-                  className="flex-1 bg-[#1B0C0C] hover:bg-red-600 text-white border border-red-600 text-[9px] py-1 font-bold uppercase transition-colors">
-                  KICK
-                </button>
-                <button onClick={() => handleBan(p.peerId)}
-                  className="flex-1 border border-[#313E17] text-[#4C5C2D] hover:bg-[#313E17] text-[9px] py-1 font-bold uppercase transition-colors">
-                  BAN
-                </button>
+              <div className="flex gap-1 mt-2">
+                <button onClick={() => handleMute(p.peerId)} className="flex-1 bg-[#1B0C0C] hover:bg-red-900/30 text-red-400 border border-[#4C5C2D] text-[9px] py-1 font-bold uppercase transition-colors">MUTE</button>
+                <button onClick={() => handleKick(p.peerId)} className="flex-1 bg-[#1B0C0C] hover:bg-red-600 text-white border border-red-600 text-[9px] py-1 font-bold uppercase transition-colors">KICK</button>
+                <button onClick={() => handleBan(p.peerId)} className="flex-1 border border-gray-600 text-gray-500 hover:bg-black text-[8px] py-1 font-bold uppercase transition-colors" title="BAN">BAN</button>
               </div>
             )}
           </div>
         ))}
+        {participants.length === 0 && (
+          <div className="text-[10px] text-[#4C5C2D] font-mono p-2">NO NODES DETECTED...</div>
+        )}
       </div>
     </div>
 
-    {/* ── Reactions ── */}
+    {/* Reactions */}
     <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
-      <div className="bg-[#313E17] px-3 py-2 border-b-[3px] border-[#4C5C2D]">
-        <h3 className="font-heading text-base font-black text-[#FFDE42] uppercase tracking-widest">Signals</h3>
+      <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D]">
+        <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Signals</h3>
       </div>
-      <div className="p-2 grid grid-cols-6 gap-1.5">
+      <div className="p-3 grid grid-cols-3 gap-2">
         {['👍', '🔥', '😂', '💀', '💖', '👾'].map(emoji => (
-          <button key={emoji} onClick={() => sendReaction(emoji)}
-            className="aspect-square text-xl bg-[#1B0C0C] hover:bg-[#FFDE42] border-[2px] border-[#313E17]
-              hover:border-[#1B0C0C] shadow-[2px_2px_0_#4C5C2D] transition-all
-              active:translate-x-[2px] active:translate-y-[2px] active:shadow-none
-              flex items-center justify-center cursor-crosshair rounded-sm">
+          <button
+            key={emoji}
+            onClick={() => sendReaction(emoji)}
+            className="text-2xl bg-[#1B0C0C] hover:bg-[#FFDE42] border-[2px] border-[#313E17] hover:border-[#1B0C0C] shadow-[3px_3px_0_#4C5C2D] py-3 transition-all active:translate-x-[2px] active:translate-y-[2px] active:shadow-none flex items-center justify-center cursor-crosshair"
+          >
             {emoji}
           </button>
         ))}
       </div>
     </div>
 
-    {/* ── Host: Video Override ── */}
+    {/* Host-only: Video Override */}
     {isHost && (
       <div className="border-[3px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#313E17]">
-        <div className="bg-[#313E17] px-3 py-2 border-b-[3px] border-[#4C5C2D]">
-          <h3 className="font-heading text-base font-black text-[#FFDE42] uppercase tracking-widest">Override</h3>
+        <div className="bg-[#313E17] px-4 py-2 border-b-[3px] border-[#4C5C2D]">
+          <h3 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">Override</h3>
         </div>
-        <div className="p-2 flex flex-col gap-2">
+        <div className="p-3 flex flex-col gap-3">
           <input
-            type="url"
+            type="text"
             value={videoUrlInput}
             onChange={e => setVideoUrlInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && !syncedVideo && videoUrlInput && handleSyncVideo()}
-            placeholder="PASTE YOUTUBE URL..."
-            className="w-full bg-[#0f0a0a] text-[#FFDE42] border-[2px] border-[#4C5C2D] px-3 py-2
-              font-mono text-xs font-bold placeholder:text-[#4C5C2D]/40
-              focus:outline-none focus:border-[#FFDE42] transition-colors"
+            placeholder="YOUTUBE URL..."
+            className="w-full bg-[#1B0C0C] text-[#FFDE42] border-[2px] border-[#4C5C2D] p-3 font-mono text-sm font-bold placeholder:text-[#4C5C2D]/50 focus:outline-none focus:border-[#FFDE42] shadow-[3px_3px_0_#313E17] transition-colors"
           />
           {!syncedVideo ? (
-            <button onClick={handleSyncVideo}
+            <button
+              onClick={handleSyncVideo}
               disabled={!isConnected || !videoUrlInput}
-              className="w-full bg-[#313E17] hover:bg-[#FFDE42] text-[#FFDE42] hover:text-[#1B0C0C]
-                border-[2px] border-[#1B0C0C] disabled:opacity-40 disabled:cursor-not-allowed
-                py-2 text-sm font-heading font-black tracking-widest uppercase transition-colors
-                shadow-[3px_3px_0_#4C5C2D] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none">
-              ▶ EXECUTE TRANSMISSION
+              className="w-full bg-[#313E17] hover:bg-[#FFDE42] text-[#FFDE42] hover:text-[#1B0C0C] border-[2px] border-[#1B0C0C] disabled:opacity-40 py-3 text-base font-heading font-black tracking-widest uppercase transition-colors shadow-[4px_4px_0_#4C5C2D] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+            >
+              Execute Transmission
             </button>
           ) : (
-            <button onClick={handleStopVideo}
-              className="w-full bg-red-700 hover:bg-red-600 text-white border-[2px] border-[#1B0C0C]
-                py-2 text-sm font-heading font-black tracking-widest uppercase transition-colors
-                shadow-[3px_3px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none">
-              ■ HALT TRANSMISSION
+            <button
+              onClick={handleStopVideo}
+              className="w-full bg-red-600 hover:bg-red-500 text-white border-[2px] border-[#1B0C0C] py-3 text-base font-heading font-black tracking-widest uppercase transition-colors shadow-[4px_4px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+            >
+              Halt Transmission
             </button>
           )}
         </div>
@@ -293,7 +151,7 @@ const SidePanel = ({
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RoomView
+// Main RoomView component
 // ─────────────────────────────────────────────────────────────────────────────
 export default function RoomView({
   room,
@@ -314,80 +172,53 @@ export default function RoomView({
     localStream, localScreenStream, remotePeers, participants,
     isMicOn, isCameraOn, isScreenOn,
     toggleMic, toggleCamera, toggleScreenShare,
-    leaveRoom, screenShareSupported,
+    viewerCount, leaveRoom,
+    screenShareSupported,
   } = useMeshWebRTC(room.roomId, socket, guestName);
 
-  const [videoUrlInput,   setVideoUrlInput]   = useState('');
-  const [syncedVideo,     setSyncedVideo]     = useState<{ url: string } | null>(null);
-  const [reactions,       setReactions]       = useState<{ id: number; emoji: string; left: number }[]>([]);
-  const [pinnedId,        setPinnedId]        = useState<string | null>(null);
-  const [isHandRaised,    setIsHandRaised]    = useState(false);
-  const [raisedHands,     setRaisedHands]     = useState<Set<string>>(new Set());
+  const [videoUrlInput, setVideoUrlInput] = useState('');
+  const [syncedVideo, setSyncedVideo] = useState<{ url: string; isPlaying: boolean } | null>(null);
+  const [reactions, setReactions] = useState<{ id: number; emoji: string; left: number }[]>([]);
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const [isHandRaised, setIsHandRaised] = useState(false);
+  // FIX: use Array.from() instead of spread to avoid --downlevelIteration TS error
+  const [raisedHands, setRaisedHands] = useState<Set<string>>(new Set());
   const [showMobilePanel, setShowMobilePanel] = useState(false);
-  // Edge case: show "Reconnecting..." banner when socket drops mid-call
-  const [wasConnected,    setWasConnected]    = useState(false);
-  const { toasts, push: toast, dismiss }      = useToast();
 
-  // Track connection drops vs initial connect
-  useEffect(() => {
-    if (isConnected) setWasConnected(true);
-  }, [isConnected]);
-
-  const showReconnecting = wasConnected && !isConnected;
-
-  // ── Speaking detection ────────────────────────────────────────────────────
-  const speakingStreams = [
-    // local mic stream — we track our own speaking for UI feedback
-    { id: 'local', stream: localStream },
-    ...remotePeers.map(p => ({ id: p.peerId, stream: p.streams[0] ?? null })),
-  ];
-  const speaking = useSpeakingDetection(speakingStreams);
-
-  // ── Socket events ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
-    const onVideoSync = (state: any) =>
-      setSyncedVideo(state?.videoUrl ? { url: state.videoUrl } : null);
-    const onReaction = ({ reaction }: any) => spawnReaction(reaction);
-    const onHandRaised  = ({ peerId }: any) =>
-      setRaisedHands(prev => new Set(prev).add(peerId));
-    const onHandLowered = ({ peerId }: any) =>
-      setRaisedHands(prev => { const n = new Set(prev); n.delete(peerId); return n; });
-    const onPeerJoined = ({ username }: any) =>
-      toast(`${username || 'Someone'} joined`, 'info');
-    const onPeerLeft = ({ peerId }: any) => {
-      const peer = remotePeers.find(p => p.peerId === peerId);
-      if (peer) toast(`${peer.username || 'A peer'} left`, 'warn');
-    };
 
-    socket.on('room:video_sync',       onVideoSync);
-    socket.on('peer:reaction',         onReaction);
-    socket.on('peer:hand_raised',      onHandRaised);
-    socket.on('peer:hand_lowered',     onHandLowered);
-    socket.on('peer:joined',           onPeerJoined);
-    socket.on('peer:left',             onPeerLeft);
+    socket.on('room:video_sync', (state: any) => {
+      setSyncedVideo(state?.videoUrl ? { url: state.videoUrl, isPlaying: state.isPlaying } : null);
+    });
+
+    socket.on('peer:reaction', ({ reaction }: any) => {
+      const id = Date.now() + Math.random();
+      const left = Math.random() * 80 + 10;
+      setReactions(prev => [...prev, { id, emoji: reaction, left }]);
+      setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 4000);
+    });
+
+    // FIX: use Array.from() instead of [...Set] spread — avoids TS2802 error
+    // without needing --downlevelIteration compiler flag
+    socket.on('peer:hand_raised', ({ peerId }: { peerId: string }) => {
+      setRaisedHands(prev => new Set(Array.from(prev).concat(peerId)));
+    });
+    socket.on('peer:hand_lowered', ({ peerId }: { peerId: string }) => {
+      setRaisedHands(prev => {
+        const n = new Set(Array.from(prev));
+        n.delete(peerId);
+        return n;
+      });
+    });
+
     return () => {
-      socket.off('room:video_sync',    onVideoSync);
-      socket.off('peer:reaction',      onReaction);
-      socket.off('peer:hand_raised',   onHandRaised);
-      socket.off('peer:hand_lowered',  onHandLowered);
-      socket.off('peer:joined',        onPeerJoined);
-      socket.off('peer:left',          onPeerLeft);
+      socket.off('room:video_sync');
+      socket.off('peer:reaction');
+      socket.off('peer:hand_raised');
+      socket.off('peer:hand_lowered');
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, remotePeers]);
-
-  const spawnReaction = (emoji: string) => {
-    const id   = Date.now() + Math.random();
-    const left = Math.random() * 80 + 10;
-    setReactions(prev => [...prev, { id, emoji, left }]);
-    setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 4000);
-  };
-
-  const sendReaction = (emoji: string) => {
-    socket?.emit('peer:reaction', { roomId: room.roomId, reaction: emoji });
-    spawnReaction(emoji);
-  };
+  }, [socket]);
 
   const toggleHand = () => {
     const next = !isHandRaised;
@@ -395,29 +226,38 @@ export default function RoomView({
     socket?.emit(next ? 'peer:raise_hand' : 'peer:lower_hand', { roomId: room.roomId });
   };
 
+  const sendReaction = (emoji: string) => {
+    socket?.emit('peer:reaction', { roomId: room.roomId, reaction: emoji });
+    const id = Date.now() + Math.random();
+    const left = Math.random() * 80 + 10;
+    setReactions(prev => [...prev, { id, emoji, left }]);
+    setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 4000);
+  };
+
   const handleSyncVideo = () => {
-    if (!videoUrlInput || !isHost) return;
-    const url = getEmbedUrl(videoUrlInput);
-    socket?.emit('host:video_sync', { roomId: room.roomId, videoUrl: url, isPlaying: true });
-    setSyncedVideo({ url });
-    toast('Broadcast started', 'info');
+    if (videoUrlInput && isHost) {
+      const embedUrl = getEmbedUrl(videoUrlInput);
+      socket?.emit('host:video_sync', { roomId: room.roomId, videoUrl: embedUrl, isPlaying: true });
+      setSyncedVideo({ url: embedUrl, isPlaying: true });
+    }
   };
 
   const handleStopVideo = () => {
     socket?.emit('host:video_sync', { roomId: room.roomId, videoUrl: null, isPlaying: false });
     setSyncedVideo(null);
     setVideoUrlInput('');
-    toast('Broadcast stopped', 'warn');
   };
 
   const handleKick = (peerId: string) => {
     if (isHost && confirm('KICK THIS USER?'))
       socket?.emit('host:kick_user', { roomId: room.roomId, targetSocketId: peerId });
   };
-  const handleBan  = (peerId: string) => {
-    if (isHost && confirm('BAN THIS USER?'))
-      socket?.emit('host:ban_user',  { roomId: room.roomId, targetSocketId: peerId });
+
+  const handleBan = (peerId: string) => {
+    if (isHost && confirm('BAN THIS USER PERMANENTLY FROM THIS SESSION?'))
+      socket?.emit('host:ban_user', { roomId: room.roomId, targetSocketId: peerId });
   };
+
   const handleMute = (peerId: string) => {
     if (isHost) socket?.emit('host:mute_user', { roomId: room.roomId, targetSocketId: peerId });
   };
@@ -428,66 +268,45 @@ export default function RoomView({
     router.push('/');
   };
 
-  const handleCopyRoomId = () => {
-    navigator.clipboard.writeText(room.roomId).then(() => toast('Room ID copied!', 'info'));
-  };
-
   // ── Build tile list ───────────────────────────────────────────────────────
-  type Tile = {
-    id: string;
-    peerId?: string;
-    labelIdx?: number;
-    raised: boolean;
-    initials?: string;
-    element: React.ReactNode;
-  };
-
-  const allTiles: Tile[] = [
+  const allTiles = [
     ...(pinnedId !== 'local' ? [{
       id: 'local',
-      raised: false,
-      initials: user?.username?.slice(0, 2).toUpperCase(),
       element: (
         <VideoMonitor
           stream={localStream}
           muted={true}
-          label={isHost ? `${user?.username || 'YOU'} ★` : (user?.username || 'YOU')}
+          label={isHost ? 'YOU (HOST)' : 'YOU'}
           isLive={isCameraOn || isMicOn}
           cameraEnabled={isCameraOn}
-          isSpeaking={isMicOn && speaking.has('local')}
-          initials={user?.username?.slice(0, 2).toUpperCase()}
         />
       ),
     }] : []),
 
     ...(localScreenStream && pinnedId !== 'local-screen' ? [{
       id: 'local-screen',
-      raised: false,
       element: (
         <VideoMonitor
           stream={localScreenStream}
           muted={true}
           label="YOUR SCREEN"
           isLive={true}
-          isSpeaking={false}
         />
       ),
     }] : []),
 
     ...remotePeers.flatMap(peer => {
-      const tiles: Tile[] = [];
-      const camStream    = peer.streams[0] ?? null;
+      const camStream = peer.streams[0] ?? null;
       const screenStreams = peer.streams.slice(1);
-      const initials     = (peer.username || 'P').slice(0, 2).toUpperCase();
-      const camId        = `${peer.peerId}-0`;
+      const tiles: any[] = [];
 
+      const camId = `${peer.peerId}-0`;
       if (camId !== pinnedId) {
         tiles.push({
-          id:       camId,
-          peerId:   peer.peerId,
+          id: camId,
+          peerId: peer.peerId,
           labelIdx: 0,
-          raised:   raisedHands.has(peer.peerId),
-          initials,
+          raised: raisedHands.has(peer.peerId),
           element: (
             <VideoMonitor
               stream={camStream}
@@ -495,8 +314,6 @@ export default function RoomView({
               label={peer.username || `PEER_${peer.peerId.slice(0, 4)}`}
               isLive={true}
               interactive={false}
-              isSpeaking={speaking.has(peer.peerId)}
-              initials={initials}
             />
           ),
         });
@@ -507,10 +324,9 @@ export default function RoomView({
         if (id === pinnedId) return;
         tiles.push({
           id,
-          peerId:   peer.peerId,
+          peerId: peer.peerId,
           labelIdx: i + 1,
-          raised:   false,
-          initials,
+          raised: false,
           element: (
             <VideoMonitor
               stream={stream}
@@ -522,321 +338,270 @@ export default function RoomView({
           ),
         });
       });
+
       return tiles;
     }),
-  ];
+  ].filter(Boolean) as any[];
 
-  // Edge case: solo — one tile only, stretch to fill space instead of small grid
-  const isSolo = allTiles.length === 1;
+  const gridColsClass =
+    allTiles.length <= 1 ? 'grid-cols-1'
+    : allTiles.length <= 2 ? 'grid-cols-1 sm:grid-cols-2'
+    : allTiles.length <= 4 ? 'grid-cols-2 sm:grid-cols-2'
+    : 'grid-cols-2 sm:grid-cols-2 lg:grid-cols-3';
 
-  const gridClass = isSolo
-    ? 'grid-cols-1'
-    : allTiles.length === 2
-    ? 'grid-cols-1 sm:grid-cols-2'
-    : allTiles.length <= 4
-    ? 'grid-cols-2 sm:grid-cols-2'
-    : allTiles.length <= 6
-    ? 'grid-cols-2 sm:grid-cols-3'
-    : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4';
+  // ── Control dock height for scroll padding ───────────────────────────────
+  // FIX (mobile layout): The control dock is position:fixed on mobile so it
+  // overlaps the video grid. We add pb that matches the dock height so the
+  // last tile is never hidden behind the dock.
+  // Desktop dock height ≈ 72px, mobile ≈ 80px. Use CSS env(safe-area-inset-bottom)
+  // for notched iPhones.
 
   return (
-    <div className="flex flex-col bg-[#1B0C0C] text-[#FFDE42] overflow-hidden" style={{ height: '100dvh' }}>
-
+    <div
+      className="flex flex-col bg-[#1B0C0C] text-[#FFDE42] overflow-hidden"
+      style={{ height: '100dvh' }}
+    >
       {/* Noise overlay */}
-      <div className="absolute inset-0 z-0 pointer-events-none mix-blend-screen opacity-[0.04]"
-        style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")` }} />
+      <div
+        className="absolute inset-0 z-0 pointer-events-none mix-blend-screen opacity-[0.06]"
+        style={{
+          backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+        }}
+      />
 
-      {/* Toast notifications */}
-      <ToastContainer toasts={toasts} dismiss={dismiss} />
-
-      {/* Floating reactions */}
+      {/* Floating Reactions */}
       <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
         {reactions.map(r => (
-          <div key={r.id} className="absolute bottom-20 text-4xl sm:text-5xl animate-fly-up drop-shadow-lg"
-            style={{ left: `${r.left}%` }}>
+          <div
+            key={r.id}
+            className="absolute bottom-20 text-5xl animate-fly-up drop-shadow-2xl"
+            style={{ left: `${r.left}%` }}
+          >
             {r.emoji}
           </div>
         ))}
       </div>
 
-      {/* ── Reconnecting banner ─────────────────────────────────────────── */}
-      {showReconnecting && (
-        <div className="relative z-30 bg-red-700 border-b-[3px] border-[#1B0C0C] flex items-center justify-center gap-2 py-1.5 px-4 shrink-0">
-          <div className="w-2 h-2 rounded-full bg-white animate-ping" />
-          <span className="font-heading text-xs font-black text-white uppercase tracking-widest">
-            SIGNAL LOST — RECONNECTING...
-          </span>
-        </div>
-      )}
-
-      {/* ── Header ──────────────────────────────────────────────────────── */}
-      <header className="relative z-20 bg-[#1B0C0C] border-b-[4px] border-[#4C5C2D]
-        flex items-center justify-between px-3 sm:px-5 py-2 shrink-0 gap-2">
-
-        {/* Left: room name */}
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="w-3 h-3 bg-[#FFDE42] border-2 border-[#1B0C0C] shadow-[2px_2px_0_#4C5C2D] shrink-0" />
-          <h1 className="font-heading text-lg sm:text-2xl lg:text-3xl font-black text-[#FFDE42] uppercase tracking-widest truncate leading-none">
+      {/* ── Header ────────────────────────────────────────────────────────── */}
+      <header className="relative z-20 bg-[#1B0C0C] border-b-[4px] border-[#4C5C2D] flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <span className="w-3 h-3 sm:w-4 sm:h-4 bg-[#FFDE42] border-2 border-[#1B0C0C] shadow-[2px_2px_0_#4C5C2D] shrink-0" />
+          <h1 className="font-heading text-xl sm:text-3xl lg:text-4xl font-black text-[#FFDE42] uppercase tracking-widest truncate">
             {room.name}
           </h1>
           {isHost && (
-            <span className="shrink-0 hidden sm:inline text-[9px] font-heading font-black bg-[#FFDE42] text-[#1B0C0C] px-1.5 py-0.5 border border-[#1B0C0C] uppercase">
+            <span className="shrink-0 text-[10px] font-heading font-black bg-[#FFDE42] text-[#1B0C0C] px-2 py-0.5 border border-[#1B0C0C] uppercase tracking-wider">
               HOST
             </span>
           )}
         </div>
 
-        {/* Right: meta + controls */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* LIVE badge */}
-          <div className="hidden sm:flex items-center gap-1.5 bg-[#313E17] border-[3px] border-[#1B0C0C] shadow-[2px_2px_0_#4C5C2D] px-2 py-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-            <span className="text-[#FFDE42] font-heading tracking-widest uppercase font-bold text-[10px]">LIVE</span>
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="hidden sm:flex items-center gap-2 bg-[#313E17] border-[3px] border-[#1B0C0C] shadow-[3px_3px_0_#4C5C2D] px-3 py-1">
+            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            <span className="text-[#FFDE42] font-heading tracking-widest uppercase font-bold text-xs">LIVE</span>
           </div>
-          {/* Peer count */}
-          <div className="flex items-center gap-1 bg-[#313E17] border-[3px] border-[#1B0C0C] shadow-[2px_2px_0_#4C5C2D] px-2 py-1">
-            <span className="text-[#FFDE42] font-heading font-bold text-xs">👤 {remotePeers.length + 1}</span>
+          <div className="flex items-center gap-1.5 bg-[#313E17] border-[3px] border-[#1B0C0C] shadow-[3px_3px_0_#4C5C2D] px-3 py-1">
+            <span className="text-[#FFDE42] font-heading font-bold text-xs sm:text-sm">👤 {remotePeers.length + 1}</span>
           </div>
-          {/* Mobile panel toggle */}
+          {/* FIX (mobile): panel toggle always visible on non-desktop */}
           <button
             onClick={() => setShowMobilePanel(v => !v)}
-            className="lg:hidden bg-[#313E17] border-[3px] border-[#1B0C0C] shadow-[2px_2px_0_#4C5C2D]
-              w-8 h-8 flex items-center justify-center text-[#FFDE42] font-heading font-black text-lg
-              hover:bg-[#4C5C2D] transition-colors"
-            aria-label="Toggle info panel"
+            className="lg:hidden bg-[#313E17] border-[3px] border-[#1B0C0C] shadow-[3px_3px_0_#4C5C2D] w-9 h-9 flex items-center justify-center text-[#FFDE42] font-heading font-black text-lg hover:bg-[#4C5C2D] transition-colors"
+            title="Toggle Info Panel"
           >
             ≡
           </button>
-          {/* Desktop user info */}
           <div className="hidden lg:flex items-center gap-2">
-            <span className="text-[#4C5C2D] font-heading text-xs font-bold uppercase tracking-wider truncate max-w-[100px]">
-              {user?.username}
-            </span>
-            <button onClick={logout}
-              className="text-[9px] text-[#FFDE42] border-[2px] border-[#4C5C2D] px-2 py-1
-                font-heading font-bold uppercase hover:bg-[#4C5C2D] transition-colors">
-              OUT
+            <span className="text-[#4C5C2D] font-heading text-sm font-bold uppercase tracking-wider">{user?.username}</span>
+            <button onClick={logout} className="text-[10px] text-[#FFDE42] border-[2px] border-[#4C5C2D] px-2 py-1 font-heading font-bold uppercase hover:bg-[#4C5C2D] transition-colors">
+              SIGN OUT
             </button>
           </div>
         </div>
       </header>
 
-      {/* ── Main body ───────────────────────────────────────────────────── */}
+      {/* ── Main body ─────────────────────────────────────────────────────── */}
       <div className="flex-1 flex overflow-hidden relative z-10" style={{ minHeight: 0 }}>
 
         {/* Video area */}
         <div className="flex-1 flex flex-col overflow-hidden relative" style={{ minHeight: 0 }}>
+          {/*
+            FIX (mobile: video grid hidden behind dock):
+            padding-bottom accounts for the fixed control dock height.
+            On mobile the dock is ~80px, add safe-area inset for notched phones.
+            On desktop the dock is inline (not fixed) so pb-0 at lg+.
+          */}
+          <div
+            className="flex-1 overflow-y-auto overflow-x-hidden p-2 sm:p-3"
+            style={{
+              minHeight: 0,
+              // FIX: dynamic bottom padding so dock never covers last tile
+              paddingBottom: 'calc(88px + env(safe-area-inset-bottom, 0px))',
+            }}
+          >
 
-          {/* Scrollable grid */}
-          <div className="flex-1 overflow-y-auto overflow-x-hidden p-2 pb-[72px] sm:pb-[80px]" style={{ minHeight: 0 }}>
-
-            {/* Pinned / speaker view */}
+            {/* Pinned view */}
             {pinnedId && (
               <div
-                className="relative group border-[4px] border-[#FFDE42] bg-[#1B0C0C] overflow-hidden mb-2 shadow-[6px_6px_0_#4C5C2D]"
+                className="relative group border-[4px] border-[#FFDE42] bg-[#1B0C0C] shadow-[8px_8px_0_#4C5C2D] overflow-hidden mb-3"
                 style={{ aspectRatio: '16/9' }}
               >
-                <span className="absolute top-0 left-0 z-10 bg-[#FFDE42] text-[#1B0C0C] font-heading
-                  px-2 py-1 text-[10px] font-black border-b-[2px] border-r-[2px] border-[#1B0C0C] uppercase tracking-widest">
+                <div className="absolute top-0 left-0 bg-[#FFDE42] text-[#1B0C0C] font-heading px-3 py-1 text-sm font-bold border-b-[3px] border-r-[3px] border-[#1B0C0C] z-10">
                   📌 PINNED
-                </span>
+                </div>
                 <div className="absolute inset-0">
                   {pinnedId === 'local' ? (
-                    <VideoMonitor stream={localStream} muted={true}
-                      label={isHost ? `${user?.username || 'YOU'} ★` : 'YOU'}
-                      isLive={true} cameraEnabled={isCameraOn}
-                      isSpeaking={isMicOn && speaking.has('local')}
-                      initials={user?.username?.slice(0, 2).toUpperCase()} />
+                    <VideoMonitor stream={localStream} muted={true} label={isHost ? 'YOU (HOST)' : 'YOU'} isLive={true} cameraEnabled={isCameraOn} />
                   ) : pinnedId === 'local-screen' && localScreenStream ? (
                     <VideoMonitor stream={localScreenStream} muted={true} label="YOUR SCREEN" isLive={true} />
-                  ) : (() => {
-                    const [pId, sIdxStr] = pinnedId.split('-');
-                    const sIdx  = parseInt(sIdxStr) || 0;
-                    const peer  = remotePeers.find(p => p.peerId === pId);
-                    const s     = peer?.streams[sIdx];
-                    const label = `${peer?.username || `PEER_${pId.slice(0, 4)}`}${sIdx > 0 ? ' (SCR)' : ''}`;
-                    return s
-                      ? <VideoMonitor stream={s} muted={false} label={label} isLive={true} interactive={false}
-                          isSpeaking={sIdx === 0 && speaking.has(pId)}
-                          initials={peer?.username?.slice(0, 2).toUpperCase()} />
-                      : <div className="w-full h-full flex items-center justify-center text-[#4C5C2D] font-heading text-sm">STREAM ENDED</div>;
-                  })()}
+                  ) : (
+                    (() => {
+                      const parts = pinnedId.split('-');
+                      const pId = parts[0];
+                      const sIdx = parseInt(parts[1]) || 0;
+                      const peer = remotePeers.find(p => p.peerId === pId);
+                      const stream = peer?.streams[sIdx];
+                      return stream
+                        ? <VideoMonitor stream={stream} muted={false} label={`PEER_${pId.slice(0, 4)}${sIdx > 0 ? ' (SCR)' : ''}`} isLive={true} interactive={false} />
+                        : null;
+                    })()
+                  )}
                 </div>
                 <button
                   onClick={() => setPinnedId(null)}
-                  className="absolute top-1 right-1 z-10 bg-[#FFDE42] text-[#1B0C0C] border-[2px] border-[#1B0C0C]
-                    px-2 py-0.5 text-[10px] font-heading font-black uppercase shadow-[2px_2px_0_#1B0C0C]
-                    opacity-0 group-hover:opacity-100 transition-opacity active:translate-x-[1px] active:translate-y-[1px] active:shadow-none">
+                  className="absolute top-2 right-2 bg-[#FFDE42] text-[#1B0C0C] border-[2px] border-[#1B0C0C] px-3 py-1 text-xs font-heading font-black uppercase shadow-[3px_3px_0_#1B0C0C] opacity-0 group-hover:opacity-100 transition-opacity active:translate-x-[1px] active:translate-y-[1px] active:shadow-none"
+                >
                   UNPIN
                 </button>
               </div>
             )}
 
-            {/* Edge case: solo mode — single tile stretched tall */}
-            {isSolo ? (
-              <div className="w-full" style={{ aspectRatio: '16/9' }}>
-                <div className="relative w-full h-full border-[3px] border-[#313E17] bg-[#0f0a0a] overflow-hidden
-                  hover:border-[#FFDE42] transition-colors group">
-                  <div className="absolute inset-0">{allTiles[0].element}</div>
-                  {/* Waiting-for-peers overlay */}
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
-                    {remotePeers.length === 0 && !isCameraOn && !isMicOn && (
-                      <div className="bg-[#1B0C0C]/80 border-[2px] border-[#4C5C2D] px-6 py-4 flex flex-col items-center gap-2">
-                        <div className="flex gap-1 items-end h-4">
-                          {[1,2,3].map(i => (
-                            <div key={i} className="w-1 bg-[#4C5C2D] rounded-sm animate-bounce"
-                              style={{ height: `${i * 5}px`, animationDelay: `${i * 150}ms` }} />
-                          ))}
-                        </div>
-                        <span className="text-[#4C5C2D] font-heading text-xs tracking-widest uppercase font-bold">
-                          WAITING FOR PEERS...
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                  <button onClick={() => setPinnedId(allTiles[0].id)}
-                    className="absolute top-2 left-2 bg-[#FFDE42] text-[#1B0C0C] border-[2px] border-[#1B0C0C]
-                      px-2 py-0.5 text-[10px] font-heading font-black uppercase shadow-[2px_2px_0_#1B0C0C]
-                      opacity-0 group-hover:opacity-100 transition-opacity active:shadow-none">
+            {/* Video grid */}
+            <div className={`grid gap-2 sm:gap-3 ${gridColsClass}`}>
+              {allTiles.map((tile: any) => (
+                <div
+                  key={tile.id}
+                  className="relative group border-[3px] sm:border-[4px] border-[#313E17] bg-[#0f0a0a] overflow-hidden hover:border-[#FFDE42] transition-colors"
+                  style={{ aspectRatio: '16/9' }}
+                >
+                  <div className="absolute inset-0">{tile.element}</div>
+                  {tile.raised && (
+                    <div className="absolute top-0 right-0 bg-[#FFDE42] text-[#1B0C0C] font-heading font-black px-2 py-1 text-base border-b-[2px] border-l-[2px] border-[#1B0C0C] z-10 animate-bounce">
+                      ✋
+                    </div>
+                  )}
+                  <button
+                    onClick={() => setPinnedId(tile.id)}
+                    className="absolute top-2 left-2 bg-[#FFDE42] text-[#1B0C0C] border-[2px] border-[#1B0C0C] px-2 py-1 text-[10px] font-heading font-black uppercase shadow-[2px_2px_0_#1B0C0C] opacity-0 group-hover:opacity-100 active:opacity-100 transition-opacity active:shadow-none"
+                  >
                     FOCUS
                   </button>
+                  {isHost && tile.labelIdx === 0 && tile.peerId && (
+                    <div className="absolute bottom-8 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10 scale-90 sm:scale-100 origin-right">
+                      <button
+                        onClick={e => { e.stopPropagation(); handleMute(tile.peerId); }}
+                        className="bg-[#1B0C0C] hover:bg-red-900/40 text-red-400 border-[2px] border-[#313E17] px-2 py-1 text-[10px] font-heading font-bold uppercase transition-colors"
+                      >
+                        MUTE
+                      </button>
+                      <button
+                        onClick={e => { e.stopPropagation(); handleKick(tile.peerId); }}
+                        className="bg-red-700 hover:bg-red-600 text-white border-[2px] border-[#1B0C0C] px-2 py-1 text-[10px] font-heading font-bold uppercase transition-colors"
+                      >
+                        KICK
+                      </button>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ) : (
-              /* Multi-peer grid */
-              <div className={`grid gap-1.5 sm:gap-2 ${gridClass}`}>
-                {allTiles.map(tile => (
-                  <div
-                    key={tile.id}
-                    className="relative group border-[3px] border-[#313E17] bg-[#0f0a0a] overflow-hidden
-                      hover:border-[#FFDE42] transition-colors"
-                    style={{ aspectRatio: '16/9' }}
-                  >
-                    <div className="absolute inset-0">{tile.element}</div>
+              ))}
 
-                    {/* Raised hand badge */}
-                    {tile.raised && (
-                      <div className="absolute top-0 right-0 bg-[#FFDE42] text-[#1B0C0C] font-heading font-black
-                        px-2 py-0.5 text-sm border-b-[2px] border-l-[2px] border-[#1B0C0C] z-10 animate-bounce">
-                        ✋
-                      </div>
-                    )}
-
-                    {/* Focus button */}
-                    <button
-                      onClick={() => setPinnedId(tile.id)}
-                      className="absolute top-1.5 left-1.5 bg-[#FFDE42] text-[#1B0C0C] border-[2px] border-[#1B0C0C]
-                        px-2 py-0.5 text-[9px] font-heading font-black uppercase shadow-[2px_2px_0_#1B0C0C]
-                        opacity-0 group-hover:opacity-100 transition-opacity active:shadow-none z-10">
-                      FOCUS
-                    </button>
-
-                    {/* Host controls on tile hover */}
-                    {isHost && tile.labelIdx === 0 && tile.peerId && (
-                      <div className="absolute bottom-7 right-1.5 flex gap-1
-                        opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                        <button onClick={e => { e.stopPropagation(); handleMute(tile.peerId!); }}
-                          className="bg-[#1B0C0C]/90 hover:bg-red-900/60 text-red-400 border border-[#4C5C2D]
-                            px-1.5 py-0.5 text-[9px] font-heading font-bold uppercase transition-colors">
-                          MUTE
-                        </button>
-                        <button onClick={e => { e.stopPropagation(); handleKick(tile.peerId!); }}
-                          className="bg-red-700 hover:bg-red-600 text-white border border-[#1B0C0C]
-                            px-1.5 py-0.5 text-[9px] font-heading font-bold uppercase transition-colors">
-                          KICK
-                        </button>
-                      </div>
-                    )}
+              {/* Synced video */}
+              {syncedVideo && (
+                <div
+                  className="relative border-[3px] sm:border-[4px] border-[#4C5C2D] bg-[#1B0C0C] shadow-[4px_4px_0_#FFDE42] overflow-hidden col-span-full"
+                  style={{ aspectRatio: '16/9' }}
+                >
+                  <div className="absolute top-0 left-0 bg-[#FFDE42] text-[#1B0C0C] font-heading px-3 py-1 text-xs font-bold border-b-[2px] border-r-[2px] border-[#1B0C0C] z-10">
+                    📡 BROADCAST
                   </div>
-                ))}
-
-                {/* Synced video tile — always full width */}
-                {syncedVideo && (
-                  <div className="col-span-full relative border-[3px] border-[#4C5C2D] bg-[#1B0C0C]
-                    shadow-[4px_4px_0_#FFDE42] overflow-hidden"
-                    style={{ aspectRatio: '16/9' }}>
-                    <span className="absolute top-0 left-0 z-10 bg-[#FFDE42] text-[#1B0C0C] font-heading
-                      px-2 py-0.5 text-[10px] font-black border-b-[2px] border-r-[2px] border-[#1B0C0C] uppercase tracking-widest">
-                      📡 BROADCAST
-                    </span>
-                    <iframe src={syncedVideo.url} className="w-full h-full border-none" allow="autoplay; fullscreen" />
-                  </div>
-                )}
-              </div>
-            )}
+                  <iframe
+                    src={syncedVideo.url}
+                    className="w-full h-full border-none"
+                    allow="autoplay; fullscreen"
+                  />
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* ── Control dock ──────────────────────────────────────────── */}
-          <div className="absolute bottom-0 left-0 right-0 z-30
-            bg-[#313E17] border-t-[4px] border-[#1B0C0C] shadow-[0_-3px_0_#4C5C2D]">
-            <div className="flex items-center justify-between px-2 sm:px-4 py-1.5 sm:py-2 gap-1 sm:gap-2 max-w-screen-xl mx-auto">
+          {/* ── Control dock ─────────────────────────────────────────────── */}
+          {/*
+            FIX (mobile layout):
+            - Use fixed positioning on mobile so the dock always sits at the
+              bottom of the viewport, even when the video grid scrolls.
+            - On desktop (lg+) switch to sticky/relative inside the flex column
+              so the sidebar layout still works correctly.
+            - Add safe-area-inset-bottom padding for notched iPhones (iOS).
+          */}
+          <div
+            className="fixed bottom-0 left-0 right-0 lg:relative lg:bottom-auto z-30 bg-[#313E17] border-t-[4px] border-[#1B0C0C] shadow-[0_-4px_0_#4C5C2D]"
+            style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+          >
+            <div className="flex items-center justify-between px-2 sm:px-4 py-2 sm:py-3 gap-1 sm:gap-2 max-w-screen-xl mx-auto">
 
               {/* Connection dot */}
-              <div
-                className={`w-2 h-2 rounded-full border-2 border-[#1B0C0C] shrink-0
-                  ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-600 animate-ping'}`}
-                title={isConnected ? 'Connected' : 'Disconnected'}
-              />
+              <div className={`w-2.5 h-2.5 rounded-full border-2 border-[#1B0C0C] shrink-0 ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-600'}`}
+                title={isConnected ? 'Connected' : 'Disconnected'} />
 
-              {/* Buttons */}
-              <div className="flex-1 flex items-center justify-center gap-1 sm:gap-1.5">
+              <div className="flex-1 flex items-center justify-center gap-1 sm:gap-2 flex-wrap">
 
                 {/* MIC */}
-                <CtrlBtn
+                <button
                   onClick={toggleMic}
-                  active={isMicOn}
-                  activeClass="bg-[#FFDE42] text-[#1B0C0C]"
-                  inactiveClass="bg-[#1B0C0C] text-red-400"
-                  icon={isMicOn ? '🎤' : '🔇'}
-                  label={isMicOn ? 'MUTE' : 'MIC'}
-                  title={isMicOn ? 'Mute microphone' : 'Unmute microphone'}
-                  pulsing={isMicOn && speaking.has('local')}
-                />
+                  className={`flex flex-col items-center justify-center gap-0.5 px-2 sm:px-4 py-2 sm:py-2.5 border-[3px] border-[#1B0C0C] font-heading font-black text-xs uppercase tracking-widest transition-transform shadow-[3px_3px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none min-w-[44px] sm:min-w-[70px] ${isMicOn ? 'bg-[#FFDE42] text-[#1B0C0C]' : 'bg-[#1B0C0C] text-red-400'}`}
+                >
+                  <span className="text-base sm:text-xl">{isMicOn ? '🎤' : '🔇'}</span>
+                  <span className="hidden sm:block text-[9px] tracking-widest">{isMicOn ? 'MUTE' : 'UNMUTE'}</span>
+                </button>
 
                 {/* CAM */}
-                <CtrlBtn
+                <button
                   onClick={toggleCamera}
-                  active={isCameraOn}
-                  activeClass="bg-[#FFDE42] text-[#1B0C0C]"
-                  inactiveClass="bg-[#1B0C0C] text-red-400"
-                  icon={isCameraOn ? '📷' : '📵'}
-                  label={isCameraOn ? 'CAM' : 'CAM'}
-                  title={isCameraOn ? 'Stop camera' : 'Start camera'}
-                />
+                  className={`flex flex-col items-center justify-center gap-0.5 px-2 sm:px-4 py-2 sm:py-2.5 border-[3px] border-[#1B0C0C] font-heading font-black text-xs uppercase tracking-widest transition-transform shadow-[3px_3px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none min-w-[44px] sm:min-w-[70px] ${isCameraOn ? 'bg-[#FFDE42] text-[#1B0C0C]' : 'bg-[#1B0C0C] text-red-400'}`}
+                >
+                  <span className="text-base sm:text-xl">{isCameraOn ? '📷' : '📵'}</span>
+                  <span className="hidden sm:block text-[9px] tracking-widest">{isCameraOn ? 'CAM ON' : 'CAM OFF'}</span>
+                </button>
 
-                {/* SCREEN */}
+                {/* SCREEN — hidden on unsupported platforms */}
                 {screenShareSupported && (
-                  <CtrlBtn
+                  <button
                     onClick={toggleScreenShare}
-                    active={isScreenOn}
-                    activeClass="bg-[#4C5C2D] text-[#FFDE42] ring-1 ring-[#FFDE42]"
-                    inactiveClass="bg-[#1B0C0C] text-[#FFDE42]"
-                    icon="🖥️"
-                    label={isScreenOn ? 'SCR' : 'SCR'}
-                    title={isScreenOn ? 'Stop screen share' : 'Share screen'}
-                  />
+                    className={`flex flex-col items-center justify-center gap-0.5 px-2 sm:px-4 py-2 sm:py-2.5 border-[3px] border-[#1B0C0C] font-heading font-black text-xs uppercase tracking-widest transition-transform shadow-[3px_3px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none min-w-[44px] sm:min-w-[70px] ${isScreenOn ? 'bg-[#4C5C2D] text-[#FFDE42]' : 'bg-[#1B0C0C] text-[#FFDE42]'}`}
+                  >
+                    <span className="text-base sm:text-xl">🖥️</span>
+                    <span className="hidden sm:block text-[9px] tracking-widest">{isScreenOn ? 'SCR ON' : 'SHARE'}</span>
+                  </button>
                 )}
 
                 {/* HAND */}
-                <CtrlBtn
+                <button
                   onClick={toggleHand}
-                  active={isHandRaised}
-                  activeClass="bg-[#FFDE42] text-[#1B0C0C]"
-                  inactiveClass="bg-[#1B0C0C] text-[#FFDE42]"
-                  icon="✋"
-                  label="HAND"
-                  title={isHandRaised ? 'Lower hand' : 'Raise hand'}
-                  pulsing={isHandRaised}
-                />
+                  className={`flex flex-col items-center justify-center gap-0.5 px-2 sm:px-4 py-2 sm:py-2.5 border-[3px] border-[#1B0C0C] font-heading font-black text-xs uppercase transition-transform shadow-[3px_3px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none min-w-[44px] sm:min-w-[70px] ${isHandRaised ? 'bg-[#FFDE42] text-[#1B0C0C] animate-bounce' : 'bg-[#1B0C0C] text-[#FFDE42]'}`}
+                >
+                  <span className="text-base sm:text-xl">✋</span>
+                  <span className="hidden sm:block text-[9px] tracking-widest">HAND</span>
+                </button>
 
-                {/* Quick reactions — sm+ only */}
-                <div className="hidden sm:flex items-center gap-1">
+                {/* Quick reactions — hidden on very small screens to save space */}
+                <div className="hidden sm:flex gap-1">
                   {['👍', '🔥', '😂'].map(e => (
-                    <button key={e} onClick={() => sendReaction(e)}
-                      className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center text-base sm:text-lg
-                        bg-[#1B0C0C] border-[2px] border-[#4C5C2D] hover:bg-[#4C5C2D]
-                        shadow-[2px_2px_0_#1B0C0C] transition-colors
-                        active:translate-x-[1px] active:translate-y-[1px] active:shadow-none">
+                    <button
+                      key={e}
+                      onClick={() => sendReaction(e)}
+                      className="w-10 h-10 lg:w-12 lg:h-12 flex items-center justify-center text-base lg:text-xl bg-[#1B0C0C] border-[2px] border-[#4C5C2D] hover:bg-[#4C5C2D] shadow-[2px_2px_0_#1B0C0C] transition-colors active:translate-x-[1px] active:translate-y-[1px] active:shadow-none"
+                    >
                       {e}
                     </button>
                   ))}
@@ -844,48 +609,47 @@ export default function RoomView({
               </div>
 
               {/* LEAVE / END */}
-              <button onClick={exitSequence}
-                className="flex flex-col items-center justify-center gap-0 px-2.5 sm:px-4 py-1.5 sm:py-2
-                  bg-red-700 hover:bg-red-600 text-white border-[3px] border-[#1B0C0C]
-                  font-heading font-black uppercase tracking-widest
-                  shadow-[3px_3px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none
-                  transition-all shrink-0"
-                title={isHost ? 'End room for everyone' : 'Leave room'}
+              <button
+                onClick={exitSequence}
+                className="flex flex-col items-center justify-center gap-0.5 px-2 sm:px-5 py-2 sm:py-2.5 bg-red-600 hover:bg-red-500 text-white border-[3px] border-[#1B0C0C] font-heading font-black text-xs uppercase tracking-widest transition-transform shadow-[3px_3px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none shrink-0 min-w-[44px]"
               >
-                <span className="text-base sm:text-lg">🚪</span>
-                <span className="text-[8px] sm:text-[10px]">{isHost ? 'END' : 'LEAVE'}</span>
+                <span className="text-base sm:text-xl">🚪</span>
+                <span className="text-[9px] sm:text-xs">{isHost ? 'END' : 'LEAVE'}</span>
               </button>
             </div>
           </div>
         </div>
 
-        {/* ── Desktop sidebar ─────────────────────────────────────────── */}
-        <aside className="hidden lg:flex w-[300px] xl:w-[340px] shrink-0 flex-col
-          border-l-[4px] border-[#4C5C2D] bg-[#1B0C0C] overflow-hidden">
+        {/* Desktop sidebar */}
+        <aside className="hidden lg:flex w-[340px] xl:w-[380px] shrink-0 flex-col border-l-[4px] border-[#4C5C2D] bg-[#1B0C0C] overflow-hidden">
           <SidePanel
             room={room} participants={participants} isHost={isHost} remotePeers={remotePeers}
             isConnected={isConnected} videoUrlInput={videoUrlInput} setVideoUrlInput={setVideoUrlInput}
             syncedVideo={syncedVideo} handleSyncVideo={handleSyncVideo} handleStopVideo={handleStopVideo}
             sendReaction={sendReaction} handleMute={handleMute} handleKick={handleKick} handleBan={handleBan}
-            raisedHands={raisedHands} socket={socket} onCopyRoomId={handleCopyRoomId}
+            raisedHands={raisedHands} socket={socket}
           />
         </aside>
 
-        {/* ── Mobile slide-up panel ────────────────────────────────────── */}
+        {/* Mobile slide-up panel */}
         {showMobilePanel && (
-          <div className="lg:hidden fixed inset-0 z-40 flex flex-col justify-end"
-            onClick={() => setShowMobilePanel(false)}>
-            <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+          <div className="lg:hidden fixed inset-0 z-40 flex flex-col justify-end" onClick={() => setShowMobilePanel(false)}>
+            <div className="absolute inset-0 bg-black/60" />
             <div
-              className="relative z-50 bg-[#1B0C0C] border-t-[4px] border-[#4C5C2D]
-                shadow-[0_-6px_0_#313E17] max-h-[75dvh] flex flex-col"
+              className="relative z-50 bg-[#1B0C0C] border-t-[4px] border-[#4C5C2D] shadow-[0_-8px_0_#313E17] flex flex-col"
+              // FIX (mobile panel height): leave room for the control dock below
+              style={{
+                maxHeight: 'calc(70vh - env(safe-area-inset-bottom, 0px))',
+                paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+              }}
               onClick={e => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between px-4 py-2.5 border-b-[3px] border-[#4C5C2D] bg-[#313E17] shrink-0">
-                <h2 className="font-heading text-lg font-black text-[#FFDE42] uppercase tracking-widest">ROOM INFO</h2>
-                <button onClick={() => setShowMobilePanel(false)}
-                  className="text-[#FFDE42] w-8 h-8 flex items-center justify-center
-                    border-[2px] border-[#4C5C2D] font-heading font-black hover:bg-[#4C5C2D] transition-colors text-lg">
+              <div className="flex items-center justify-between px-4 py-3 border-b-[3px] border-[#4C5C2D] bg-[#313E17] shrink-0">
+                <h2 className="font-heading text-xl font-black text-[#FFDE42] uppercase tracking-widest">ROOM INFO</h2>
+                <button
+                  onClick={() => setShowMobilePanel(false)}
+                  className="text-[#FFDE42] text-2xl font-heading font-black w-8 h-8 flex items-center justify-center border-[2px] border-[#4C5C2D] hover:bg-[#4C5C2D]"
+                >
                   ✕
                 </button>
               </div>
@@ -895,7 +659,7 @@ export default function RoomView({
                   isConnected={isConnected} videoUrlInput={videoUrlInput} setVideoUrlInput={setVideoUrlInput}
                   syncedVideo={syncedVideo} handleSyncVideo={handleSyncVideo} handleStopVideo={handleStopVideo}
                   sendReaction={sendReaction} handleMute={handleMute} handleKick={handleKick} handleBan={handleBan}
-                  raisedHands={raisedHands} socket={socket} onCopyRoomId={handleCopyRoomId}
+                  raisedHands={raisedHands} socket={socket}
                 />
               </div>
             </div>
@@ -903,49 +667,26 @@ export default function RoomView({
         )}
       </div>
 
-      <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes fly-up {
-          0%   { transform: translateY(60px) scale(0.5); opacity: 0; }
-          10%  { opacity: 1; transform: translateY(0) scale(1.2); }
-          50%  { transform: translateY(-35vh) scale(1) rotate(8deg); }
-          100% { transform: translateY(-70vh) scale(0.9); opacity: 0; }
-        }
-        .animate-fly-up { animation: fly-up 3.5s ease-out forwards; }
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: #1B0C0C; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #4C5C2D; }
-      `}} />
-    </div>
-  );
-}
+      <style dangerouslySetInnerHTML={{
+        __html: `
+          @keyframes fly-up {
+            0%   { transform: translateY(80px) scale(0.5); opacity: 0; }
+            10%  { opacity: 1; transform: translateY(0) scale(1.2); }
+            50%  { transform: translateY(-40vh) scale(1) rotate(10deg); }
+            100% { transform: translateY(-80vh); opacity: 0; }
+          }
+          .animate-fly-up { animation: fly-up 4s ease-out forwards; }
 
-// ── CtrlBtn — reusable control dock button ──────────────────────────────────
-function CtrlBtn({
-  onClick, active, activeClass, inactiveClass, icon, label, title, pulsing = false,
-}: {
-  onClick: () => void;
-  active: boolean;
-  activeClass: string;
-  inactiveClass: string;
-  icon: string;
-  label: string;
-  title: string;
-  pulsing?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`relative flex flex-col items-center justify-center gap-0
-        px-2 sm:px-3 py-1.5 sm:py-2 border-[3px] border-[#1B0C0C]
-        font-heading font-black uppercase tracking-widest
-        shadow-[3px_3px_0_#1B0C0C] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none
-        transition-all min-w-[40px] sm:min-w-[52px]
-        ${active ? activeClass : inactiveClass}
-        ${pulsing ? 'ring-2 ring-offset-1 ring-offset-[#313E17] ring-[#FFDE42]' : ''}`}
-    >
-      <span className="text-base sm:text-xl leading-none">{icon}</span>
-      <span className="text-[8px] sm:text-[9px] tracking-[0.1em] leading-none mt-0.5">{label}</span>
-    </button>
+          /* FIX: custom scrollbar — thin on mobile to save space */
+          .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+          .custom-scrollbar::-webkit-scrollbar-track { background: #1B0C0C; }
+          .custom-scrollbar::-webkit-scrollbar-thumb { background: #4C5C2D; }
+
+          /* FIX (iOS Safari): prevent bounce scroll on the root that
+             causes the fixed control dock to drift up */
+          html, body { overscroll-behavior: none; }
+        `,
+      }} />
+    </div>
   );
 }
