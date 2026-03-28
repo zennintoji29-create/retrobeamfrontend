@@ -1,3 +1,5 @@
+'use client';
+
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
 
@@ -43,30 +45,16 @@ const ICE_SERVERS: RTCConfiguration = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AUDIO CONSTRAINTS
+// AUDIO & VIDEO CONSTRAINTS
 // ─────────────────────────────────────────────────────────────────────────────
-const AUDIO_CONSTRAINTS: MediaTrackConstraints = IS_ANDROID_WEBVIEW
-  ? {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    }
-  : {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-      sampleRate: 48000,
-      channelCount: 1,
-      // @ts-ignore — non-standard but widely supported
-      latency: 0.01,
-    };
+const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  ...(IS_ANDROID_WEBVIEW ? {} : { sampleRate: 48000, channelCount: 1, latency: 0.01 }),
+};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// VIDEO CONSTRAINTS
-// ─────────────────────────────────────────────────────────────────────────────
-function buildVideoConstraints(
-  facingMode: 'user' | 'environment' = 'user',
-): MediaTrackConstraints {
+function buildVideoConstraints(facingMode: 'user' | 'environment' = 'user'): MediaTrackConstraints {
   if (IS_ANDROID_WEBVIEW) return { facingMode: { ideal: facingMode } };
   if (IS_MOBILE) {
     return {
@@ -88,32 +76,26 @@ function patchOpusSDP(sdp: string): string {
   const opusPt = opusPtMatch ? opusPtMatch[1] : null;
 
   if (opusPt) {
-    result = result.replace(
-      /^(m=audio \d+ \S+ )([\d ]+)$/m,
-      (_match, prefix, payloads) => {
-        const pts = payloads.trim().split(' ');
-        const reordered = [opusPt, ...pts.filter((p: string) => p !== opusPt)];
-        return `${prefix}${reordered.join(' ')}`;
-      },
-    );
+    result = result.replace(/^(m=audio \d+ \S+ )([\d ]+)$/m, (_match, prefix, payloads) => {
+      const pts = payloads.trim().split(' ');
+      const reordered = [opusPt, ...pts.filter((p: string) => p !== opusPt)];
+      return `${prefix}${reordered.join(' ')}`;
+    });
   }
 
-  result = result.replace(
-    /a=fmtp:(\d+) (.*opus.*)\r\n/gi,
-    (_match, pt, params) => {
-      let patched = params.includes('minptime') ? params : `minptime=10;${params}`;
-      patched = patched.replace(/useinbandfec=\d/, 'useinbandfec=1');
-      patched = patched.replace(/usedtx=\d/, 'usedtx=1');
-      patched = patched.replace(/stereo=\d/, 'stereo=0');
-      patched = patched.replace(/maxaveragebitrate=\d+/, 'maxaveragebitrate=40000');
-      const extras: string[] = [];
-      if (!patched.includes('useinbandfec')) extras.push('useinbandfec=1');
-      if (!patched.includes('usedtx')) extras.push('usedtx=1');
-      if (!patched.includes('stereo')) extras.push('stereo=0');
-      if (!patched.includes('maxaveragebitrate')) extras.push('maxaveragebitrate=40000');
-      return `a=fmtp:${pt} ${patched}${extras.length ? ';' + extras.join(';') : ''}\r\n`;
-    },
-  );
+  result = result.replace(/a=fmtp:(\d+) (.*opus.*)\r\n/gi, (_match, pt, params) => {
+    let patched = params.includes('minptime') ? params : `minptime=10;${params}`;
+    patched = patched.replace(/useinbandfec=\d/, 'useinbandfec=1');
+    patched = patched.replace(/usedtx=\d/, 'usedtx=1');
+    patched = patched.replace(/stereo=\d/, 'stereo=0');
+    patched = patched.replace(/maxaveragebitrate=\d+/, 'maxaveragebitrate=40000');
+    const extras: string[] = [];
+    if (!patched.includes('useinbandfec')) extras.push('useinbandfec=1');
+    if (!patched.includes('usedtx')) extras.push('usedtx=1');
+    if (!patched.includes('stereo')) extras.push('stereo=0');
+    if (!patched.includes('maxaveragebitrate')) extras.push('maxaveragebitrate=40000');
+    return `a=fmtp:${pt} ${patched}${extras.length ? ';' + extras.join(';') : ''}\r\n`;
+  });
 
   if (!result.includes('b=AS:')) {
     result = result.replace(/(m=audio [^\r\n]+\r\n(?:c=[^\r\n]+\r\n)?)/, '$1b=AS:40\r\n');
@@ -135,8 +117,7 @@ export const SCREEN_SHARE_SUPPORTED: boolean = (() => {
 })();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPER — wait for stable signaling state with timeout
-// FIX (Bug 3): Prevents createOffer during have-local-offer state
+// SIGNALING STATE HELPER
 // ─────────────────────────────────────────────────────────────────────────────
 function waitForStableState(pc: RTCPeerConnection, timeoutMs = 5000): Promise<boolean> {
   if (pc.signalingState === 'stable') return Promise.resolve(true);
@@ -156,6 +137,9 @@ function waitForStableState(pc: RTCPeerConnection, timeoutMs = 5000): Promise<bo
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────────────────────────────────────
 export interface RemotePeer {
   peerId: string;
   username?: string;
@@ -175,11 +159,7 @@ type SenderRole = 'audio' | 'camera' | 'screen';
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN HOOK
 // ─────────────────────────────────────────────────────────────────────────────
-export function useMeshWebRTC(
-  roomId: string,
-  socket: Socket | null,
-  guestName?: string,
-) {
+export function useMeshWebRTC(roomId: string, socket: Socket | null, guestName?: string) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const [remotePeers, setRemotePeers] = useState<RemotePeer[]>([]);
@@ -189,34 +169,30 @@ export function useMeshWebRTC(
   const [isScreenOn, setIsScreenOn] = useState(false);
   const [viewerCount, setViewerCount] = useState(1);
 
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const participantsRef = useRef<Participant[]>([]);
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingCandidates = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const userMediaStreamRef = useRef<MediaStream | null>(null);
   const displayMediaStreamRef = useRef<MediaStream | null>(null);
+  const processedStreamRef = useRef<MediaStream | null>(null);
   const senderRoles = useRef<Map<string, Map<RTCRtpSender, SenderRole>>>(new Map());
 
-  // Audio pipeline refs
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
-  const compressorNodeRef = useRef<DynamicsCompressorNode | null>(null);
-  const processedStreamRef = useRef<MediaStream | null>(null);
-  const audioSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
-
-  // Stable boolean refs
+  const participantsRef = useRef<Participant[]>([]);
   const isMicOnRef = useRef(false);
   const isCameraOnRef = useRef(false);
   const isScreenOnRef = useRef(false);
-
-  // Concurrency guard
   const isUpdatingTracksRef = useRef(false);
 
-  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
+  // Audio pipeline
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const compressorNodeRef = useRef<DynamicsCompressorNode | null>(null);
+  const audioSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+  // Sync refs with state
   useEffect(() => { participantsRef.current = participants; }, [participants]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // buildAudioPipeline
+  // ────────────────────────────────────────────��────────────────────────────
+  // AUDIO PIPELINE BUILD
   // ─────────────────────────────────────────────────────────────────────────
   const buildAudioPipeline = useCallback((rawStream: MediaStream): MediaStream | null => {
     if (processedStreamRef.current && audioSourceNodeRef.current) {
@@ -229,7 +205,7 @@ export function useMeshWebRTC(
         ctx = new AudioContext({ sampleRate: IS_ANDROID_WEBVIEW ? undefined : 48000 });
         audioContextRef.current = ctx;
       } catch (e) {
-        console.error('AudioContext creation failed, using raw stream', e);
+        console.warn('AudioContext creation failed, using raw stream', e);
         processedStreamRef.current = rawStream;
         return rawStream;
       }
@@ -284,7 +260,7 @@ export function useMeshWebRTC(
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // teardownAudioPipeline
+  // AUDIO PIPELINE TEARDOWN
   // ─────────────────────────────────────────────────────────────────────────
   const teardownAudioPipeline = useCallback(() => {
     if (audioSourceNodeRef.current) {
@@ -307,13 +283,13 @@ export function useMeshWebRTC(
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // leaveRoom
+  // LEAVE ROOM
   // ─────────────────────────────────────────────────────────────────────────
   const leaveRoom = useCallback(() => {
     peerConnections.current.forEach(pc => pc.close());
     peerConnections.current.clear();
     senderRoles.current.clear();
-    setRemotePeers([]);
+    pendingCandidates.current.clear();
 
     userMediaStreamRef.current?.getTracks().forEach(t => t.stop());
     userMediaStreamRef.current = null;
@@ -325,23 +301,19 @@ export function useMeshWebRTC(
 
     setLocalStream(null);
     setLocalScreenStream(null);
-    localStreamRef.current = null;
+    setRemotePeers([]);
 
     isMicOnRef.current = false;
     isCameraOnRef.current = false;
     isScreenOnRef.current = false;
+
     setIsMicOn(false);
     setIsCameraOn(false);
     setIsScreenOn(false);
   }, [teardownAudioPipeline]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // replaceTracksOnPeers
-  //
-  // FIX (Bug 3): Guard signalingState before every manual createOffer.
-  // FIX (Bug 5): addTrack fires onnegotiationneeded — no manual offer for
-  //   addTrack cases. Only removeTrack needs a manual offer.
-  // FIX (Bug 1): processedStreamRef is guaranteed set before this runs.
+  // REPLACE TRACKS ON ALL PEERS - 🔥 CRITICAL FIX
   // ─────────────────────────────────────────────────────────────────────────
   const replaceTracksOnPeers = useCallback(async (currentSocket: Socket) => {
     const audioTrack = processedStreamRef.current?.getAudioTracks()[0] ?? null;
@@ -366,31 +338,33 @@ export function useMeshWebRTC(
       const senderByRole = (role: SenderRole): RTCRtpSender | undefined =>
         Array.from(roleMap!.entries()).find(([, r]) => r === role)?.[0];
 
-      // Only removeTrack needs a manual offer — addTrack fires onnegotiationneeded
       let needsManualRenegotiation = false;
 
-      // ── Audio ──────────────────────────────────────────────────────────
+      // ── AUDIO ──
       const audioSender = senderByRole('audio');
       if (audioSender) {
         if (audioTrack && audioSender.track?.id !== audioTrack.id) {
           await audioSender.replaceTrack(audioTrack).catch(e =>
-            console.error(`replaceTrack audio failed for ${peerId}`, e),
+            console.error(`replaceTrack audio failed for ${peerId}:`, e),
           );
         }
         if (audioSender.track) audioSender.track.enabled = isMicOnRef.current;
       } else if (audioTrack && processedStreamRef.current) {
         const s = pc.addTrack(audioTrack, processedStreamRef.current);
         roleMap.set(s, 'audio');
-        // addTrack fires onnegotiationneeded — no manual offer needed
+      } else if (audioSender && !audioTrack) {
+        pc.removeTrack(audioSender);
+        roleMap.delete(audioSender);
+        needsManualRenegotiation = true;
       }
 
-      // ── Camera ─────────────────────────────────────────────────────────
+      // ── CAMERA ──
       const camSender = senderByRole('camera');
       if (camSender) {
         if (videoTrack) {
           if (camSender.track?.id !== videoTrack.id) {
             await camSender.replaceTrack(videoTrack).catch(e =>
-              console.error(`replaceTrack camera failed for ${peerId}`, e),
+              console.error(`replaceTrack camera failed for ${peerId}:`, e),
             );
           }
           if (camSender.track) camSender.track.enabled = isCameraOnRef.current;
@@ -400,20 +374,22 @@ export function useMeshWebRTC(
       } else if (videoTrack && userMediaStreamRef.current) {
         const s = pc.addTrack(videoTrack, userMediaStreamRef.current);
         roleMap.set(s, 'camera');
-        // addTrack fires onnegotiationneeded — no manual offer needed
+      } else if (camSender && !videoTrack) {
+        pc.removeTrack(camSender);
+        roleMap.delete(camSender);
+        needsManualRenegotiation = true;
       }
 
-      // ── Screen ─────────────────────────────────────────────────────────
+      // ── SCREEN SHARE ──
       const screenSender = senderByRole('screen');
       if (screenSender) {
         if (screenTrack) {
           if (screenSender.track?.id !== screenTrack.id) {
             await screenSender.replaceTrack(screenTrack).catch(e =>
-              console.error(`replaceTrack screen failed for ${peerId}`, e),
+              console.error(`replaceTrack screen failed for ${peerId}:`, e),
             );
           }
         } else {
-          // FIX (Bug 5): removeTrack does NOT fire onnegotiationneeded reliably
           pc.removeTrack(screenSender);
           roleMap.delete(screenSender);
           needsManualRenegotiation = true;
@@ -421,13 +397,11 @@ export function useMeshWebRTC(
       } else if (screenTrack && displayMediaStreamRef.current) {
         const s = pc.addTrack(screenTrack, displayMediaStreamRef.current);
         roleMap.set(s, 'screen');
-        // addTrack fires onnegotiationneeded — no manual offer needed
       }
 
-      // ── Manual renegotiation — ONLY for removeTrack (screen stop) ──────
+      // Manual renegotiation if needed
       if (needsManualRenegotiation) {
         try {
-          // FIX (Bug 3): Wait for stable before offering
           const isStable = await waitForStableState(pc);
           if (!isStable) {
             console.warn(`Peer ${peerId}: signaling state never became stable, skipping`);
@@ -441,11 +415,13 @@ export function useMeshWebRTC(
           console.error('Manual renegotiation failed for peer', peerId, e);
         }
       }
+
+      senderRoles.current.set(peerId, roleMap);
     }
   }, [roomId]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // handlePeerLeft
+  // HANDLE PEER LEFT
   // ─────────────────────────────────────────────────────────────────────────
   const handlePeerLeft = useCallback((peerId: string) => {
     const pc = peerConnections.current.get(peerId);
@@ -459,24 +435,20 @@ export function useMeshWebRTC(
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Socket + WebRTC wiring effect
-  //
-  // FIX (Bug 9 — timing): This effect only runs when socket becomes non-null.
-  //   Because useSocket now only exposes the socket AFTER it is connected,
-  //   by the time this effect runs the socket is guaranteed to be live.
-  //   peer:join is therefore always emitted on a connected socket.
-  //
-  // FIX (reconnect — peer:join re-emit): On socket reconnect, all existing
-  //   peer connections are dead (server has a new socket.id). We clean up
-  //   and re-emit peer:join so the server re-introduces us to the room.
+  // SOCKET & WEBRTC SETUP - 🔥 CRITICAL FIX
   // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
 
-    // Socket is guaranteed connected here (useSocket only exposes it post-connect)
-    socket.emit('peer:join', { roomId, guestName });
+    // Only emit peer:join AFTER socket is connected
+    if (!socket.connected) {
+      socket.once('connect', () => {
+        socket.emit('peer:join', { roomId, guestName });
+      });
+    } else {
+      socket.emit('peer:join', { roomId, guestName });
+    }
 
-    // FIX (Bug 6): Use actual ref objects for glare detection — not local lets
     const glareState = new WeakMap<RTCPeerConnection, {
       isPolite: boolean;
       makingOfferRef: { current: boolean };
@@ -491,7 +463,6 @@ export function useMeshWebRTC(
       senderRoles.current.set(peerId, roleMap);
 
       const isPolite = !isOfferer;
-      // FIX (Bug 6): Real ref objects so mutations are shared across all closures
       const makingOfferRef = { current: false };
       const ignoreOfferRef = { current: false };
       glareState.set(pc, { isPolite, makingOfferRef, ignoreOfferRef });
@@ -506,9 +477,6 @@ export function useMeshWebRTC(
         }
       };
 
-      // FIX (Bug 2): Removed `if (!pc.remoteDescription) return` inner guard —
-      //   it silently killed the first offer when remoteDescription was null.
-      // FIX (Bug 5): onnegotiationneeded is the SOLE path for addTrack offers.
       pc.onnegotiationneeded = async () => {
         if (makingOfferRef.current) return;
         try {
@@ -525,48 +493,49 @@ export function useMeshWebRTC(
         }
       };
 
-      // FIX (Bug 4): ontrack — never drop incoming stream via stale ended-filter
       pc.ontrack = (event) => {
         const participantAtEventTime = participantsRef.current.find(p => p.peerId === peerId);
-        const incomingStream = event.streams[0] ?? null;
+        const incomingStream = event.streams[0] ?? new MediaStream([event.track]);
 
         setRemotePeers(prev => {
-          const peerEntry = prev.find(p => p.peerId === peerId);
+          let peerEntry = prev.find(p => p.peerId === peerId);
 
-          if (peerEntry) {
-            let updatedStreams = [...peerEntry.streams];
-
-            if (incomingStream) {
-              const existingStream = updatedStreams.find(s => s.id === incomingStream.id);
-              if (existingStream) {
-                if (!existingStream.getTrackById(event.track.id)) {
-                  existingStream.addTrack(event.track);
-                }
-              } else {
-                updatedStreams.push(incomingStream);
-              }
-            } else {
-              updatedStreams.push(new MediaStream([event.track]));
-            }
-
-            // FIX (Bug 4): Exempt incomingStream from the ended filter
-            updatedStreams = updatedStreams.filter(s =>
-              (incomingStream && s.id === incomingStream.id) ||
-              s.getTracks().some(t => t.readyState !== 'ended'),
-            );
-
-            return prev.map(p =>
-              p.peerId === peerId ? { ...p, streams: updatedStreams } : p,
-            );
+          if (!peerEntry) {
+            // New peer
+            return [...prev, {
+              peerId,
+              username: participantAtEventTime?.name ?? 'Remote Peer',
+              isHost: participantAtEventTime?.isHost,
+              streams: [incomingStream],
+            }];
           }
 
-          const stream = incomingStream ?? new MediaStream([event.track]);
-          return [...prev, {
-            peerId,
-            username: participantAtEventTime?.name ?? 'Remote Peer',
-            isHost: participantAtEventTime?.isHost,
-            streams: [stream],
-          }];
+          let updatedStreams = [...peerEntry.streams];
+
+          // Determine if this is a screen track or camera track
+          const isScreenTrack =
+            event.track.label.toLowerCase().includes('screen') ||
+            event.track.label.includes('OBS');
+
+          if (isScreenTrack) {
+            // Screen: replace at index 1
+            updatedStreams[1] = incomingStream;
+          } else {
+            // Camera/audio: use index 0
+            if (updatedStreams[0]?.id !== incomingStream.id) {
+              updatedStreams[0] = incomingStream;
+            } else if (!updatedStreams[0]) {
+              updatedStreams[0] = incomingStream;
+            }
+          }
+
+          // Remove holes and ended streams
+          updatedStreams = updatedStreams
+            .filter(s => s && s.getTracks().some(t => t.readyState !== 'ended'));
+
+          return prev.map(p =>
+            p.peerId === peerId ? { ...p, streams: updatedStreams } : p,
+          );
         });
 
         event.track.onended = () => {
@@ -574,7 +543,9 @@ export function useMeshWebRTC(
             if (p.peerId !== peerId) return p;
             return {
               ...p,
-              streams: p.streams.filter(s => s.getTracks().some(t => t.readyState !== 'ended')),
+              streams: p.streams.filter(s =>
+                s.getTracks().some(t => t.readyState !== 'ended'),
+              ),
             };
           }));
         };
@@ -650,14 +621,13 @@ export function useMeshWebRTC(
     };
 
     const handlePeerOffer = async ({
-      sdp, peerId,
-    }: { sdp: RTCSessionDescriptionInit; peerId: string }) => {
+      sdp, peerId, username, isHost,
+    }: { sdp: RTCSessionDescriptionInit; peerId: string; username?: string; isHost?: boolean }) => {
       let pc = peerConnections.current.get(peerId);
       if (!pc) pc = createPeerConnection(peerId, false);
 
       const gs = glareState.get(pc);
       const isPolite = gs?.isPolite ?? true;
-      // FIX (Bug 6): reads the live ref value, not stale snapshot
       const makingOffer = gs?.makingOfferRef.current ?? false;
 
       const offerCollision =
@@ -681,6 +651,7 @@ export function useMeshWebRTC(
         await pc.setLocalDescription(answer);
         socket.emit('peer:answer', { sdp: answer, roomId, targetSocketId: peerId });
 
+        // 🔥 FIX: Always flush pending candidates after setRemoteDescription
         const queued = pendingCandidates.current.get(peerId) ?? [];
         for (const c of queued) {
           await pc.addIceCandidate(new RTCIceCandidate(c)).catch(e =>
@@ -699,7 +670,6 @@ export function useMeshWebRTC(
       const pc = peerConnections.current.get(peerId);
       if (!pc) return;
       const gs = glareState.get(pc);
-      // FIX (Bug 6): reads live ref
       if (gs?.ignoreOfferRef.current) return;
       try {
         if (pc.signalingState !== 'have-local-offer') {
@@ -707,6 +677,8 @@ export function useMeshWebRTC(
           return;
         }
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+
+        // 🔥 FIX: Always flush pending candidates after setRemoteDescription
         const queued = pendingCandidates.current.get(peerId) ?? [];
         for (const c of queued) {
           await pc.addIceCandidate(new RTCIceCandidate(c)).catch(e =>
@@ -732,6 +704,7 @@ export function useMeshWebRTC(
           }
         }
       } else {
+        // Queue candidates before remoteDescription is set
         const queued = pendingCandidates.current.get(peerId) ?? [];
         queued.push(candidate);
         pendingCandidates.current.set(peerId, queued);
@@ -739,7 +712,6 @@ export function useMeshWebRTC(
     };
 
     const handleViewersUpdate = ({ count }: { count: number }) => setViewerCount(count);
-
     const handleParticipantsUpdate = ({
       participants: updated,
     }: { participants: Participant[] }) => {
@@ -760,21 +732,13 @@ export function useMeshWebRTC(
       processedStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = false; });
     };
 
-    // FIX (reconnect — peer:join re-emit):
-    // When the socket reconnects after a drop, the server assigns a new socket.id.
-    // All existing RTCPeerConnections are now dead (the remote side's ICE
-    // candidates point to the old socket.id). We tear everything down and
-    // re-emit peer:join so the server re-introduces us to all room members,
-    // triggering a fresh round of offer/answer exchanges.
     const handleReconnect = () => {
       console.log('[useMeshWebRTC] socket reconnected — re-joining room');
-      // Close all stale peer connections
       peerConnections.current.forEach(pc => pc.close());
       peerConnections.current.clear();
       senderRoles.current.clear();
       pendingCandidates.current.clear();
       setRemotePeers([]);
-      // Re-join the room with the new socket.id
       socket.emit('peer:join', { roomId, guestName });
     };
 
@@ -816,10 +780,7 @@ export function useMeshWebRTC(
   }, [socket, roomId, guestName, leaveRoom, handlePeerLeft, replaceTracksOnPeers, buildAudioPipeline]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // updateLocalTracks
-  //
-  // FIX (Bug 1): buildAudioPipeline return value is now explicitly assigned
-  //   to processedStreamRef.current if not already set.
+  // UPDATE LOCAL TRACKS - 🔥 CRITICAL FIX
   // ─────────────────────────────────────────────────────────────────────────
   const updateLocalTracks = useCallback(async ({
     targetAudio,
@@ -867,10 +828,7 @@ export function useMeshWebRTC(
                 e.name === 'DevicesNotFoundError')
             ) {
               try {
-                userMediaStreamRef.current = await tryGetMedia(
-                  false,
-                  currentMic ? AUDIO_CONSTRAINTS : false,
-                );
+                userMediaStreamRef.current = await tryGetMedia(false, currentMic ? AUDIO_CONSTRAINTS : false);
                 currentVideo = false;
               } catch (e2) {
                 console.error('Audio-only fallback also failed', e2);
@@ -909,7 +867,6 @@ export function useMeshWebRTC(
         }
 
         if (userMediaStreamRef.current?.getAudioTracks().length) {
-          // FIX (Bug 1): Capture return value and assign explicitly
           if (!processedStreamRef.current || !audioSourceNodeRef.current) {
             const built = buildAudioPipeline(userMediaStreamRef.current);
             if (!processedStreamRef.current && built) {
@@ -945,7 +902,7 @@ export function useMeshWebRTC(
         teardownAudioPipeline();
       }
 
-      // ── Screen share ────────────────────────────────────────────────────
+      // ── SCREEN SHARE ──
       if (currentScreen) {
         if (!SCREEN_SHARE_SUPPORTED) {
           alert(
@@ -972,7 +929,6 @@ export function useMeshWebRTC(
             } else if (e.name === 'NotSupportedError') {
               alert('Screen sharing is not supported on this device or browser.');
             }
-            // AbortError = user cancelled picker — silent
             currentScreen = false;
           }
         }
@@ -981,7 +937,7 @@ export function useMeshWebRTC(
         displayMediaStreamRef.current = null;
       }
 
-      // ── Commit state ────────────────────────────────────────────────────
+      // ── COMMIT STATE ──
       isMicOnRef.current = currentMic;
       isCameraOnRef.current = currentVideo;
       isScreenOnRef.current = currentScreen;

@@ -8,7 +8,6 @@ interface Props {
   label?: string;
   isLive?: boolean;
   interactive?: boolean;
-  /** Shows a CAM OFF overlay when stream exists but camera is disabled */
   cameraEnabled?: boolean;
 }
 
@@ -25,28 +24,12 @@ export default function VideoMonitor({
   const [isPip, setIsPip] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [needsTap, setNeedsTap] = useState(false);
-  // FIX: track whether we have at least one active video track to show
   const [hasVideoTrack, setHasVideoTrack] = useState(false);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // safePlay — attempt play() with proper readyState guard
-  //
-  // FIX (video freeze after re-attach): Calling play() while readyState < 2
-  //   (HAVE_CURRENT_DATA) causes a race on Chrome/mobile where the video
-  //   element enters a broken state — it renders the first frame and stops.
-  //   We wait for 'loadedmetadata' (readyState >= 1) before calling play().
-  //
-  // FIX (repeated play() AbortError): Calling play() while a previous play()
-  //   Promise is still pending causes an AbortError. We track the pending
-  //   promise and only call play() once per srcObject assignment.
-  //
-  // FIX (iOS Safari black frame): On iOS, play() must be called inside a
-  //   user gesture OR after 'loadedmetadata'. We always defer to the event.
-  // ─────────────────────────────────────────────────────────────────────────
   const playPromiseRef = useRef<Promise<void> | null>(null);
 
+  // 🔥 CRITICAL FIX: Safe play with proper readyState guard
   const safePlay = useCallback((video: HTMLVideoElement) => {
-    // If already playing or loading, don't start another play() chain
     if (playPromiseRef.current) return;
 
     const doPlay = () => {
@@ -58,10 +41,9 @@ export default function VideoMonitor({
         .catch((e: DOMException) => {
           playPromiseRef.current = null;
           if (e.name === 'NotAllowedError') {
-            // Autoplay blocked — show tap overlay
             setNeedsTap(true);
           } else if (e.name === 'AbortError') {
-            // Benign — another srcObject assignment is in flight
+            // Benign
           } else {
             console.warn('Video play() failed:', e.name, e.message);
           }
@@ -69,10 +51,8 @@ export default function VideoMonitor({
     };
 
     if (video.readyState >= 2) {
-      // Already has data — play immediately
       doPlay();
     } else {
-      // Wait for metadata so the browser has dimensions + can decode
       const onReady = () => {
         video.removeEventListener('loadedmetadata', onReady);
         doPlay();
@@ -81,68 +61,34 @@ export default function VideoMonitor({
     }
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // attachStream
-  //
-  // FIX (video not updating when track is added to existing stream):
-  //   We compare by stream.id AND by track count/ids.  If the stream object
-  //   is the same but has new tracks, we still need to re-trigger play().
-  //
-  // FIX (null stream → black frame persists):
-  //   When stream becomes null, we set srcObject=null AND call load() to
-  //   force the video element to reset to its blank state.  Without load(),
-  //   some browsers show the last decoded frame indefinitely.
-  //
-  // FIX (video freeze on mobile after toggle):
-  //   On Android, setting srcObject on a playing video without pausing first
-  //   can cause the decoder to lock up. We pause() before reassigning.
-  // ─────────────────────────────────────────────────────────────────────────
+  // 🔥 CRITICAL FIX: Always re-attach on stream change or track enable/disable
   const attachStream = useCallback((s: MediaStream | null) => {
     const video = videoRef.current;
     if (!video) return;
 
-    if (video.srcObject === s) {
-      // Same object — but if it's playing and paused, try to resume
-      if (s && video.paused && !needsTap) {
-        safePlay(video);
-      }
-      return;
-    }
-
-    // Pause before reassigning to avoid decoder lock on Android
+    // Always pause and reset before attaching new stream
     if (!video.paused) {
       video.pause();
     }
-    // Abort any in-flight play promise ref
     playPromiseRef.current = null;
 
     if (s) {
       video.srcObject = s;
-      // Update video track presence for CAM OFF logic
       const videoTracks = s.getVideoTracks();
       setHasVideoTrack(videoTracks.length > 0 && videoTracks.some(t => t.readyState === 'live'));
+      
+      // 🔥 FIX: Force load() to ensure video element picks up the stream
+      video.load();
       safePlay(video);
     } else {
       video.srcObject = null;
-      video.load(); // FIX: force blank frame instead of last decoded frame
+      video.load();
       setHasVideoTrack(false);
       setNeedsTap(false);
     }
-  }, [safePlay, needsTap]);
+  }, [safePlay]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Stream attachment effect
-  //
-  // FIX (video freezes when remote peer re-enables camera):
-  //   We listen to 'addtrack' on the stream and force a srcObject
-  //   re-attachment cycle.  Without this, when a remote peer re-enables their
-  //   camera (adding a new video track to an existing stream), the video
-  //   element ignores the new track.
-  //
-  // FIX (track enabled state changes not reflected visually):
-  //   We listen to 'mute'/'unmute' on individual tracks to update the
-  //   hasVideoTrack state so the CAM OFF overlay shows/hides correctly.
-  // ─────────────────────────────────────────────────────────────────────────
+  // 🔥 FIX: Listen for track changes and re-attach
   useEffect(() => {
     attachStream(stream);
     if (!stream) return;
@@ -155,12 +101,11 @@ export default function VideoMonitor({
         setHasVideoTrack(true);
       }
 
-      // FIX: pause + null + reassign forces the video element to re-init
-      // its decoder and pick up the new track. Without this double-assignment,
-      // the new track is present in the stream but the element ignores it.
+      // Re-init video element with updated stream
       if (!video.paused) video.pause();
       playPromiseRef.current = null;
       video.srcObject = null;
+      video.load();
       video.srcObject = stream;
       safePlay(video);
     };
@@ -172,7 +117,6 @@ export default function VideoMonitor({
       }
     };
 
-    // Track-level mute events (track.enabled toggled on sender side)
     const trackListeners: Array<{ track: MediaStreamTrack; onMute: () => void; onUnmute: () => void }> = [];
 
     const attachTrackListeners = () => {
@@ -199,22 +143,19 @@ export default function VideoMonitor({
     };
   }, [stream, attachStream, safePlay]);
 
-  // ── Fullscreen tracking ─────────────────────────────────────────────────
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
-  // ── Manual play (tap-to-play for autoplay-blocked environments) ─────────
   const handleManualPlay = () => {
     const video = videoRef.current;
     if (!video) return;
-    playPromiseRef.current = null; // Clear any stale ref
+    playPromiseRef.current = null;
     safePlay(video);
   };
 
-  // ── PiP ─────────────────────────────────────────────────────────────────
   const togglePip = async () => {
     if (!videoRef.current) return;
     if (!document.pictureInPictureEnabled) return;
@@ -231,7 +172,6 @@ export default function VideoMonitor({
     }
   };
 
-  // ── Fullscreen ───────────────────────────────────────────────────────────
   const toggleFullscreen = async () => {
     if (!containerRef.current) return;
     try {
@@ -246,27 +186,12 @@ export default function VideoMonitor({
   };
 
   const pipAvailable = typeof document !== 'undefined' && !!document.pictureInPictureEnabled;
-
-  // FIX: show CAM OFF when:
-  // 1. The caller explicitly says cameraEnabled=false, OR
-  // 2. The stream exists but has no live video tracks
   const showCamOff = stream !== null && (!cameraEnabled || !hasVideoTrack);
 
   return (
-    <div
-      ref={containerRef}
-      className="relative w-full h-full bg-[#0f0a0a] overflow-hidden flex flex-col"
-    >
-      {/* ── Video element ──────────────────────────────────────────────── */}
+    <div ref={containerRef} className="relative w-full h-full bg-[#0f0a0a] overflow-hidden flex flex-col">
       {stream ? (
         <>
-          {/*
-            FIX (echo): local preview MUST have muted={true}.
-            FIX (mobile scaling): object-contain prevents portrait crop.
-            FIX (iOS): playsInline required to prevent full-screen takeover.
-            FIX (video lag on low-end mobile): preload="auto" hints the
-              browser to buffer frames aggressively.
-          */}
           <video
             ref={videoRef}
             autoPlay
@@ -278,7 +203,6 @@ export default function VideoMonitor({
             style={{ pointerEvents: 'none' }}
           />
 
-          {/* Tap-to-play overlay (autoplay blocked) */}
           {needsTap && (
             <button
               onClick={handleManualPlay}
@@ -295,7 +219,6 @@ export default function VideoMonitor({
             </button>
           )}
 
-          {/* CAM OFF overlay */}
           {showCamOff && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0f0a0a]/95 z-10">
               <div className="w-14 h-14 border-[3px] border-[#4C5C2D] flex items-center justify-center">
@@ -309,7 +232,6 @@ export default function VideoMonitor({
           )}
         </>
       ) : (
-        /* No stream placeholder */
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0f0a0a]">
           <div className="w-16 h-16 border-[3px] border-[#4C5C2D] flex items-center justify-center">
             <svg className="w-8 h-8 text-[#4C5C2D]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -321,7 +243,6 @@ export default function VideoMonitor({
         </div>
       )}
 
-      {/* ── Bottom label bar ──────────────────────────────────────────────── */}
       <div className="absolute bottom-0 left-0 right-0 flex justify-between items-center px-3 py-1.5 bg-[#1B0C0C]/90 border-t-[2px] border-[#4C5C2D] z-10">
         <div className="flex items-center gap-2 min-w-0">
           {isLive && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />}
