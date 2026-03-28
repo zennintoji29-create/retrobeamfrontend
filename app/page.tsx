@@ -65,6 +65,7 @@ function ControlChip({ label, active, icon }: { label: string; active?: boolean;
 
 export default function Home() {
   const { currentFrame, getFrameSrc } = useFrameSequence();
+  const frameImgRef = useRef<HTMLImageElement>(null);
   const monitorRef = useRef<HTMLDivElement>(null);
   const { user, loading } = useAuth();
 
@@ -83,6 +84,13 @@ export default function Home() {
   }, [rotX, rotY]);
 
   const pct = (currentFrame / (TOTAL_FRAMES - 1)) * 100;
+
+  // Update img src directly via DOM ref — avoids React remounting on every frame
+  useEffect(() => {
+    if (frameImgRef.current) {
+      frameImgRef.current.src = getFrameSrc(currentFrame);
+    }
+  }, [currentFrame, getFrameSrc]);
 
   return (
     <div style={{
@@ -414,11 +422,15 @@ export default function Home() {
               {/* Video */}
               <div style={{ position: 'relative', aspectRatio: '16/9', background: '#000', overflow: 'hidden' }}>
                 <img
-                  key={currentFrame}
-                  src={getFrameSrc(currentFrame)}
+                  ref={frameImgRef}
+                  src={getFrameSrc(0)}
                   alt="Video Sequence Frame"
                   decoding="async"
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  style={{
+                    width: '100%', height: '100%', objectFit: 'cover',
+                    display: 'block',
+                    willChange: 'contents',
+                  }}
                 />
                 {/* Vignette */}
                 <div style={{

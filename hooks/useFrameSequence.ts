@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 export const TOTAL_FRAMES = 192;
-const FRAME_DELAY_MS = 41;
-const PRELOAD_BATCH = 8; // Load this many ahead at a time
+const FRAME_DELAY_MS = 41; // ~24fps
+const PRELOAD_BATCH = 16;  // Larger initial burst for faster initial load
 
 export function getFrameSrc(index: number): string {
   const n = String(index).padStart(3, '0');
@@ -16,8 +16,9 @@ export function useFrameSequence() {
   const frameRef = useRef(0);
   const lastTickRef = useRef<number>(0);
   const rafRef = useRef<number>(0);
+  // Warm-up: whether the first batch is fully loaded
+  const warmRef = useRef(false);
 
-  // Sequential batch preloading instead of 192 simultaneous fetches
   const preloadFrame = useCallback((index: number): Promise<void> => {
     return new Promise((resolve) => {
       if (imageCache.current.has(index)) { resolve(); return; }
@@ -36,6 +37,9 @@ export function useFrameSequence() {
     }
     await Promise.all(promises);
 
+    // Mark warm once first batch is ready
+    if (!warmRef.current) warmRef.current = true;
+
     // Chain: once this batch is done, load the next
     const nextStart = (startIndex + PRELOAD_BATCH) % TOTAL_FRAMES;
     if (imageCache.current.size < TOTAL_FRAMES) {
@@ -44,27 +48,29 @@ export function useFrameSequence() {
   }, [preloadFrame]);
 
   useEffect(() => {
-    // Use rAF + timestamp instead of setInterval + setState
     const tick = (timestamp: number) => {
-      if (timestamp - lastTickRef.current >= FRAME_DELAY_MS) {
+      // Don't start animating until first batch is warm
+      if (warmRef.current && timestamp - lastTickRef.current >= FRAME_DELAY_MS) {
         const next = (frameRef.current + 1) % TOTAL_FRAMES;
         // Only advance if the next frame is actually loaded
         if (imageCache.current.has(next)) {
           frameRef.current = next;
           setCurrentFrame(next);
+          lastTickRef.current = timestamp; // Only update clock when we ACTUALLY advance
         }
-        lastTickRef.current = timestamp;
+        // If frame not ready yet, DON'T update lastTickRef — retry next rAF tick
       }
       rafRef.current = requestAnimationFrame(tick);
     };
 
-    // Start preloading first batch, then chain
+    // Start preloading — animation begins once first batch (16 frames) is ready
     preloadBatch(0);
     rafRef.current = requestAnimationFrame(tick);
 
     return () => {
       cancelAnimationFrame(rafRef.current);
       imageCache.current.clear();
+      warmRef.current = false;
     };
   }, [preloadBatch]);
 

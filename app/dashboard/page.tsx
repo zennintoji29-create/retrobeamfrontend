@@ -18,7 +18,7 @@ export default function Dashboard() {
     if (user) {
       api.get('/rooms/user/all')
         .then(res => {
-          setRooms(res.data.rooms);
+          setRooms(res.data.rooms ?? []);
           setFetching(false);
         })
         .catch(err => {
