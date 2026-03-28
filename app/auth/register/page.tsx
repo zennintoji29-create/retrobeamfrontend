@@ -12,6 +12,7 @@ import { useAuth } from '@/hooks/useAuth';
 
 export default function Register() {
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
@@ -26,7 +27,7 @@ export default function Register() {
     }
     
     try {
-      const res = await api.post('/auth/register', { username, password });
+      const res = await api.post('/auth/register', { username, email, password });
       setUser(res.data.user);
       router.push('/dashboard');
     } catch (err: any) {
@@ -49,6 +50,13 @@ export default function Register() {
               label="Username" 
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              required
+            />
+            <RetroInput 
+              label="Email" 
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               required
             />
             <RetroInput 
